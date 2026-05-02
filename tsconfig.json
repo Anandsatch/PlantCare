@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@plantcare/api-types": ["packages/api-types/src/index.ts"],
+      "@plantcare/api-types/*": ["packages/api-types/src/*"],
+      "@plantcare/theme": ["packages/theme/src/index.ts"],
+      "@plantcare/theme/*": ["packages/theme/src/*"]
+    }
+  },
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    "**/.expo",
+    "**/dist",
+    "**/.wrangler",
+    "**/coverage"
+  ]
+}

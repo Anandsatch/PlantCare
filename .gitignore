@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+
+# Testing
+coverage/
+*.lcov
+
+# Build outputs
+dist/
+build/
+.expo/
+.expo-shared/
+web-build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Cloudflare Workers
+.wrangler/
+.dev.vars
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Native (Continuous Native Generation — rebuilt from app.json)
+ios/
+android/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Expo
+expo-env.d.ts
+
+# Conductor (per-workspace state)
+.context/

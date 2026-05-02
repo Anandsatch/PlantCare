@@ -1,0 +1,18 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@plantcare/api-types": ["../../packages/api-types/src/index.ts"],
+      "@plantcare/api-types/*": ["../../packages/api-types/src/*"],
+      "@plantcare/theme": ["../../packages/theme/src/index.ts"],
+      "@plantcare/theme/*": ["../../packages/theme/src/*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
+}
