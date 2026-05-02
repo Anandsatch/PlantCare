@@ -44,4 +44,10 @@ describe('RootLayout font gate', () => {
     render(<RootLayout />);
     expect(screen.getByTestId('router-stack')).toBeOnTheScreen();
   });
+
+  it('falls through to the router stack on font load error (offline cold-start)', () => {
+    mockedUseFonts.mockReturnValue([false, new Error('fonts.gstatic.com unreachable')]);
+    render(<RootLayout />);
+    expect(screen.getByTestId('router-stack')).toBeOnTheScreen();
+  });
 });

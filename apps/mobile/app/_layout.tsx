@@ -22,7 +22,7 @@ import { View } from 'react-native';
 // launch screens during cold start.
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Fraunces_400Regular,
     Fraunces_400Regular_Italic,
     Fraunces_600SemiBold,
@@ -31,7 +31,10 @@ export default function RootLayout() {
     Inter_600SemiBold,
   });
 
-  if (!fontsLoaded) {
+  // If fonts fail to load (offline cold-start, fonts.gstatic.com blocked),
+  // fall through to the Stack with system-font fallback rather than hanging
+  // on the splash forever. The user sees a less-polished but functional app.
+  if (!fontsLoaded && !fontError) {
     return <View style={{ flex: 1, backgroundColor: lightColors.surface }} />;
   }
 
