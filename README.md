@@ -41,6 +41,36 @@ bun run mobile:ios       # or :android
 bun run backend:dev
 ```
 
+## CI / Code Review
+
+Every PR targeting `main` gets two automated adversarial review passes plus the
+standard test CI. All three are advisory — the TL approves the merge.
+
+| Reviewer | Trigger | Setup |
+|----------|---------|-------|
+| Test CI (typecheck + jest + vitest) | every push + PR | none — runs out of the box |
+| Codex (`codex review`) | PR `opened`, `synchronize`, `reopened` | add `OPENAI_API_KEY` to repo secrets |
+| CodeRabbit | PR `opened`, `synchronize`, `reopened` | install the [CodeRabbit GitHub App](https://github.com/marketplace/coderabbit-ai) on this repo |
+
+### Enable Codex
+
+Settings → Secrets and variables → Actions → **New repository secret**:
+
+- Name: `OPENAI_API_KEY`
+- Value: an OpenAI API key with access to the model Codex CLI uses
+
+The workflow (`.github/workflows/codex-review.yml`) fails loudly with a clear
+error message if the secret is missing, so it's easy to spot. It posts a single
+PR comment that edits in place on subsequent pushes (look for the
+`<!-- codex-review-marker -->` HTML comment).
+
+### Enable CodeRabbit
+
+Install the [CodeRabbit GitHub App](https://github.com/marketplace/coderabbit-ai)
+and grant it access to `Anandsatch/PlantCare`. Configuration lives in
+[`.coderabbit.yaml`](./.coderabbit.yaml) — `chill` profile, path-specific
+guidance for mobile/backend/theme/tests, and lockfiles + design assets ignored.
+
 ## Status
 
 V1 in development. See [`WORKBACK.md`](./WORKBACK.md) for the live status board.
