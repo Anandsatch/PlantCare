@@ -24,6 +24,14 @@ describe('safeJsonParse', () => {
     expect(safeJsonParse('{"a":1,"b":[1,2,],}')).toEqual({ a: 1, b: [1, 2] });
   });
 
+  it('does NOT strip commas inside string values during trailing-comma cleanup', () => {
+    // Regression: a regex-based stripper damaged this input by mutating
+    // species_slug from "a,}" to "a}". The state-aware stripper must leave
+    // the string literal intact.
+    const raw = '{"species_slug":"a,}","confidence":80,}';
+    expect(safeJsonParse(raw)).toEqual({ species_slug: 'a,}', confidence: 80 });
+  });
+
   it('handles nested objects with braces in string literals', () => {
     const raw = '{"name":"Steve {the plant}","slug":"monstera"}';
     expect(safeJsonParse(raw)).toEqual({ name: 'Steve {the plant}', slug: 'monstera' });

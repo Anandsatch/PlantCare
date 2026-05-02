@@ -27,6 +27,9 @@ export type RouterDeps = {
   callPaid?: typeof callPaid;
   // Returns true if a paid call is allowed. V1: always true. Hook for KV later.
   tryConsumeEscalation?: () => Promise<boolean>;
+  // Caller's request abort signal. Threaded into both free + paid HTTP calls
+  // so a disconnected client doesn't burn the full free+paid timeout budget.
+  signal?: AbortSignal;
 };
 
 export type RouterInput = {
@@ -40,19 +43,28 @@ export async function identifyRouter(
   const free = (deps.callFree ?? callFree);
   const paid = (deps.callPaid ?? callPaid);
   const escalate = deps.tryConsumeEscalation ?? (async () => true);
+  const signal = deps.signal;
 
   const start = Date.now();
   const freeRes = await free({
     apiKey: deps.apiKey,
     systemPrompt: SYSTEM_PROMPT_IDENTIFY,
     imageDataUrl: input.imageDataUrl,
+    signal,
   });
+
+  // Caller-aborted: skip escalation entirely (paid call would just burn
+  // budget for a response no one will read).
+  if (!freeRes.ok && freeRes.reason === 'aborted') {
+    return freeFailedFallback(Date.now() - start);
+  }
 
   // Free model errored or returned empty → try escalation
   if (!freeRes.ok) {
     return tryEscalate({
       paid,
       escalate,
+      signal,
       apiKey: deps.apiKey,
       input,
       startedAt: start,
@@ -65,6 +77,7 @@ export async function identifyRouter(
     return tryEscalate({
       paid,
       escalate,
+      signal,
       apiKey: deps.apiKey,
       input,
       startedAt: start,
@@ -76,6 +89,7 @@ export async function identifyRouter(
     const escalated = await tryEscalate({
       paid,
       escalate,
+      signal,
       apiKey: deps.apiKey,
       input,
       startedAt: start,
@@ -93,6 +107,7 @@ export async function identifyRouter(
 type EscalateArgs = {
   paid: typeof callPaid;
   escalate: () => Promise<boolean>;
+  signal: AbortSignal | undefined;
   apiKey: string;
   input: RouterInput;
   startedAt: number;
@@ -101,6 +116,11 @@ type EscalateArgs = {
 };
 
 async function tryEscalate(args: EscalateArgs): Promise<IdentifyResponse> {
+  // If the caller already disconnected, don't even ask the budget gate —
+  // paying for a response no one reads is the worst outcome.
+  if (args.signal?.aborted) {
+    return args.fallback ?? freeFailedFallback(Date.now() - args.startedAt);
+  }
   const allowed = await args.escalate();
   if (!allowed) {
     return args.fallback ?? freeFailedFallback(Date.now() - args.startedAt);
@@ -109,6 +129,7 @@ async function tryEscalate(args: EscalateArgs): Promise<IdentifyResponse> {
     apiKey: args.apiKey,
     systemPrompt: SYSTEM_PROMPT_IDENTIFY,
     imageDataUrl: args.input.imageDataUrl,
+    signal: args.signal,
   });
   if (!paidRes.ok) {
     return args.fallback ?? freeFailedFallback(Date.now() - args.startedAt);
@@ -150,24 +171,26 @@ export function parseIdentify(raw: string): ParsedIdentify | null {
 
   const confidence = clamp(Math.round(conf), 0, 100);
 
-  const alternatives: IdentifyAlternative[] = Array.isArray(obj.alternatives)
-    ? obj.alternatives
-        .map((a): IdentifyAlternative | null => {
-          if (!a || typeof a !== 'object') return null;
-          const alt = a as Record<string, unknown>;
-          if (typeof alt.species_slug !== 'string' || !alt.species_slug) return null;
-          if (typeof alt.confidence !== 'number' || !Number.isFinite(alt.confidence)) return null;
-          const altLabel =
-            typeof alt.species_label === 'string' ? alt.species_label : alt.species_slug;
-          return {
-            species_slug: alt.species_slug,
-            species_label: altLabel,
-            confidence: clamp(Math.round(alt.confidence), 0, 100),
-          };
-        })
-        .filter((a): a is IdentifyAlternative => a !== null)
-        .slice(0, 5) // cap blast radius if a model returns 200 alternatives
-    : [];
+  // Cap with early-exit so a hostile model returning 100k alternatives doesn't
+  // force us to validate every one before slicing.
+  const alternatives: IdentifyAlternative[] = [];
+  const MAX_ALTERNATIVES = 5;
+  if (Array.isArray(obj.alternatives)) {
+    for (const a of obj.alternatives) {
+      if (alternatives.length >= MAX_ALTERNATIVES) break;
+      if (!a || typeof a !== 'object') continue;
+      const alt = a as Record<string, unknown>;
+      if (typeof alt.species_slug !== 'string' || !alt.species_slug) continue;
+      if (typeof alt.confidence !== 'number' || !Number.isFinite(alt.confidence)) continue;
+      const altLabel =
+        typeof alt.species_label === 'string' ? alt.species_label : alt.species_slug;
+      alternatives.push({
+        species_slug: alt.species_slug,
+        species_label: altLabel,
+        confidence: clamp(Math.round(alt.confidence), 0, 100),
+      });
+    }
+  }
 
   return {
     species_slug: slug,

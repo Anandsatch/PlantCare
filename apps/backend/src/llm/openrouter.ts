@@ -15,7 +15,12 @@ const PAID_TIMEOUT_MS = 25_000;
 
 export type CallResult =
   | { ok: true; content: string; latency_ms: number }
-  | { ok: false; reason: 'timeout' | 'http_error' | 'empty'; status?: number; latency_ms: number };
+  | {
+      ok: false;
+      reason: 'timeout' | 'http_error' | 'empty' | 'aborted';
+      status?: number;
+      latency_ms: number;
+    };
 
 type CallArgs = {
   apiKey: string;
@@ -36,10 +41,15 @@ export function callPaid(args: CallArgs): Promise<CallResult> {
 async function callOpenRouter(
   args: CallArgs & { model: string; timeoutMs: number },
 ): Promise<CallResult> {
+  // Caller already abandoned us — don't even open the socket.
+  if (args.signal?.aborted) {
+    return { ok: false, reason: 'aborted', latency_ms: 0 };
+  }
   const fetchImpl = args.fetchImpl ?? fetch;
   const controller = new AbortController();
+  const onCallerAbort = () => controller.abort();
   if (args.signal) {
-    args.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    args.signal.addEventListener('abort', onCallerAbort, { once: true });
   }
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
   const start = Date.now();
@@ -78,10 +88,18 @@ async function callOpenRouter(
   } catch (e) {
     const latency_ms = Date.now() - start;
     if ((e as Error).name === 'AbortError') {
-      return { ok: false, reason: 'timeout', latency_ms };
+      // Distinguish caller-initiated abort from our own timeout — the router
+      // uses 'aborted' to skip escalation (caller is gone, paid call would
+      // burn budget for nothing).
+      const reason = args.signal?.aborted ? 'aborted' : 'timeout';
+      return { ok: false, reason, latency_ms };
     }
     return { ok: false, reason: 'http_error', latency_ms };
   } finally {
     clearTimeout(timer);
+    // Always remove the listener; { once: true } self-removes ONLY if it
+    // fired, so on the success path it would otherwise stay on the caller
+    // signal forever.
+    args.signal?.removeEventListener('abort', onCallerAbort);
   }
 }

@@ -22,13 +22,50 @@ export function safeJsonParse<T = unknown>(raw: string): T | null {
   if (block) {
     const parsed = tryParse<T>(block);
     if (parsed !== null) return parsed;
-    // 4. Last-ditch: strip trailing commas inside the block
-    const cleaned = block.replace(/,(\s*[}\]])/g, '$1');
+    // 4. Last-ditch: strip trailing commas (string-literal aware so we don't
+    // damage commas inside string values, e.g. {"slug":"a,}"} stays intact).
+    const cleaned = stripTrailingCommas(block);
     const recovered = tryParse<T>(cleaned);
     if (recovered !== null) return recovered;
   }
 
   return null;
+}
+
+// Remove a comma when followed by optional whitespace + `}` or `]`, but only
+// when the comma is OUTSIDE a string literal. A regex-based version of this
+// would corrupt valid JSON like {"slug":"a,}"}.
+function stripTrailingCommas(s: string): string {
+  let out = '';
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      out += ch;
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === ',') {
+      let j = i + 1;
+      while (j < s.length && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n' || s[j] === '\r')) {
+        j++;
+      }
+      if (j < s.length && (s[j] === '}' || s[j] === ']')) {
+        // Skip the comma
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function tryParse<T>(s: string): T | null {

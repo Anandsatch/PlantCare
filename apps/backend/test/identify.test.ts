@@ -67,6 +67,38 @@ describe('POST /api/identify', () => {
     expect(body).toMatchObject({ ok: false, message: 'missing_or_invalid_device_id' });
   });
 
+  it('accepts device id at 128-char boundary', async () => {
+    mockOpenRouter(HIGH_CONF);
+    const res = await SELF.fetch(URL, {
+      method: 'POST',
+      headers: { 'X-Device-Id': 'a'.repeat(128) },
+      body: makeForm(),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects device id at 129 chars', async () => {
+    const res = await SELF.fetch(URL, {
+      method: 'POST',
+      headers: { 'X-Device-Id': 'a'.repeat(129) },
+      body: makeForm(),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects bytes that do not match declared mime (PDF labeled as PNG)', async () => {
+    // PDF magic = "%PDF" (0x25 0x50 0x44 0x46). Sniff must reject.
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x0a, 0x0a, 0x0a]);
+    const res = await SELF.fetch(URL, {
+      method: 'POST',
+      headers: { 'X-Device-Id': 'device-12345678' },
+      body: makeForm({ mime: 'image/png', bytes: pdfBytes }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as ApiResult<IdentifyResponse>;
+    expect(body).toMatchObject({ ok: false, message: 'image_bytes_do_not_match_type' });
+  });
+
   it('rejects request with no image field', async () => {
     const form = new FormData();
     form.append('not_image', 'whatever');
@@ -116,6 +148,33 @@ describe('POST /api/identify', () => {
       expect(body.data.species_slug).toBe('monstera_deliciosa');
       expect(body.data.confidence).toBe(92);
       expect(body.data.source).toBe('free');
+    }
+  });
+
+  it('escalates when OpenRouter returns 200 with empty choices array', async () => {
+    // Free model returns valid HTTP 200 but no usable content → router treats
+    // as 'empty' and escalates. Paid call returns a usable parse.
+    fetchMock
+      .get(OPENROUTER)
+      .intercept({ path: OPENROUTER_PATH, method: 'POST' })
+      .reply(200, { choices: [] });
+    fetchMock
+      .get(OPENROUTER)
+      .intercept({ path: OPENROUTER_PATH, method: 'POST' })
+      .reply(200, { choices: [{ message: { content: HIGH_CONF } }] });
+
+    const res = await SELF.fetch(URL, {
+      method: 'POST',
+      headers: { 'X-Device-Id': 'device-12345678' },
+      body: makeForm(),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ApiResult<IdentifyResponse>;
+    if (body.ok && body.kind === 'success') {
+      expect(body.data.source).toBe('paid_escalated');
+      expect(body.data.species_slug).toBe('monstera_deliciosa');
+    } else {
+      expect.fail('expected ok:true,kind:success with paid_escalated source');
     }
   });
 

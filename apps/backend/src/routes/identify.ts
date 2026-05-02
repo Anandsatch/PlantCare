@@ -64,9 +64,24 @@ export const identifyRoute = new Hono<HonoEnv>().post('/', async (c) => {
   }
 
   const buf = await file.arrayBuffer();
-  const imageDataUrl = toDataUrl(mime, buf);
+  const bytes = new Uint8Array(buf);
 
-  const data = await identifyRouter({ imageDataUrl }, { apiKey });
+  // Magic-byte check: client-declared `file.type` is trusted by the browser
+  // but a hostile caller can send arbitrary bytes labeled image/png. Cheap
+  // sniff prevents wasted OpenRouter spend on garbage.
+  if (!magicMatchesMime(bytes, mime)) {
+    return c.json<ApiResult<IdentifyResponse>>(
+      { ok: false, kind: 'error', message: 'image_bytes_do_not_match_type' },
+      400,
+    );
+  }
+
+  const imageDataUrl = toDataUrl(mime, bytes);
+
+  const data = await identifyRouter(
+    { imageDataUrl },
+    { apiKey, signal: c.req.raw.signal },
+  );
   return c.json<ApiResult<IdentifyResponse>>({ ok: true, kind: 'success', data });
 });
 
@@ -88,12 +103,48 @@ function isUploadedFile(v: unknown): v is UploadedFile {
 
 // Manual base64 encode (no Buffer in Workers runtime). Chunked to avoid
 // "Maximum call stack size exceeded" on large images via String.fromCharCode(...arr).
-function toDataUrl(mime: string, buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function toDataUrl(mime: string, bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return `data:${mime};base64,${btoa(binary)}`;
+}
+
+// Cheap header sniffs. JPEG: FF D8 FF. PNG: 89 50 4E 47 0D 0A 1A 0A.
+// WebP: "RIFF"…"WEBP" at offsets 0/8. HEIC: "ftyp" at offset 4 followed by
+// a heic-family brand (heic, heix, hevc, mif1, msf1) at offset 8.
+function magicMatchesMime(bytes: Uint8Array, mime: string): boolean {
+  if (bytes.length < 12) return false;
+  switch (mime) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    case 'image/png':
+      return (
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47 &&
+        bytes[4] === 0x0d &&
+        bytes[5] === 0x0a &&
+        bytes[6] === 0x1a &&
+        bytes[7] === 0x0a
+      );
+    case 'image/webp':
+      return (
+        bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+      );
+    case 'image/heic': {
+      if (bytes[4] !== 0x66 || bytes[5] !== 0x74 || bytes[6] !== 0x79 || bytes[7] !== 0x70) {
+        return false;
+      }
+      const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      return ['heic', 'heix', 'hevc', 'mif1', 'msf1'].includes(brand);
+    }
+    default:
+      return false;
+  }
 }

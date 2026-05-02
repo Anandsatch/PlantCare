@@ -14,9 +14,18 @@ export type ApiResult<T> =
   | { ok: false; kind: 'rejected_off_topic'; message: string };
 
 // ─── /api/identify (E1) ──────────────────────────────────────────────────
-// Source = which model produced the response. `free_failed` = the free model
-// returned unparseable JSON AND escalation was unavailable; the response is a
-// degraded fallback (species_slug='unknown', confidence=0).
+// Source = which model produced the response.
+//   'free'           — free model parsed cleanly with confidence >= 70.
+//   'paid_escalated' — paid model returned a usable parse after free was
+//                      unavailable, unparseable, or low-confidence.
+//   'free_failed'    — degraded fallback (species_slug='unknown', confidence=0).
+//                      Returned whenever the router could not produce a usable
+//                      model result: free + paid HTTP errors, free unparseable
+//                      AND paid unparseable, free unparseable AND escalation
+//                      gate refused, or caller aborted before any model
+//                      replied. Mobile callers MUST check this discriminator
+//                      to render the A-3 "I'm not sure" UI rather than a
+//                      confident identification.
 export type IdentifySource = 'free' | 'paid_escalated' | 'free_failed';
 
 export type IdentifyAlternative = {

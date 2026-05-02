@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { identifyRouter, parseIdentify } from '../src/llm/router';
-import type { CallResult } from '../src/llm/openrouter';
+import type { callFree as callFreeFn, CallResult } from '../src/llm/openrouter';
 
 const HIGH_CONF_FREE = JSON.stringify({
   species_slug: 'monstera_deliciosa',
@@ -28,8 +28,18 @@ const HIGH_CONF_PAID = JSON.stringify({
 function ok(content: string, latency_ms = 50): CallResult {
   return { ok: true, content, latency_ms };
 }
-function err(reason: 'timeout' | 'http_error' | 'empty', latency_ms = 10): CallResult {
+function err(
+  reason: 'timeout' | 'http_error' | 'empty' | 'aborted',
+  latency_ms = 10,
+): CallResult {
   return { ok: false, reason, latency_ms };
+}
+
+// Typed mock factory so .mock.calls is inferred as the real param tuple
+// instead of `never[]`.
+type CallFn = typeof callFreeFn;
+function makeCall(impl: CallFn): ReturnType<typeof vi.fn<CallFn>> {
+  return vi.fn<CallFn>(impl);
 }
 
 const baseInput = { imageDataUrl: 'data:image/jpeg;base64,xxxx' };
@@ -162,6 +172,55 @@ describe('identifyRouter', () => {
     expect(callPaid).not.toHaveBeenCalled();
     expect(res.source).toBe('free');
   });
+
+  it('passes SYSTEM_PROMPT_IDENTIFY to BOTH free and paid calls', async () => {
+    // Regression guard: if someone wires a different prompt into tryEscalate
+    // by accident, the escalated model would identify against the wrong
+    // contract and parse failures would explode silently.
+    const callFree = makeCall(async () => ok('garbage'));
+    const callPaid = makeCall(async () => ok(HIGH_CONF_PAID));
+
+    await identifyRouter(baseInput, { ...baseDeps, callFree, callPaid });
+
+    const freeArg = callFree.mock.calls[0]![0]!;
+    const paidArg = callPaid.mock.calls[0]![0]!;
+    expect(freeArg.systemPrompt).toBe(paidArg.systemPrompt);
+    expect(freeArg.systemPrompt).toMatch(/plant identification expert/);
+    expect(freeArg.systemPrompt).toMatch(/STRICT JSON only/);
+  });
+
+  it('skips escalation when caller signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const callFree = makeCall(async () => err('aborted'));
+    const callPaid = makeCall(async () => ok(HIGH_CONF_PAID));
+
+    const res = await identifyRouter(baseInput, {
+      ...baseDeps,
+      callFree,
+      callPaid,
+      signal: controller.signal,
+    });
+
+    expect(callPaid).not.toHaveBeenCalled();
+    expect(res.source).toBe('free_failed');
+  });
+
+  it('forwards caller signal to both free and paid HTTP calls', async () => {
+    const controller = new AbortController();
+    const callFree = makeCall(async () => ok(LOW_CONF_FREE));
+    const callPaid = makeCall(async () => ok(HIGH_CONF_PAID));
+
+    await identifyRouter(baseInput, {
+      ...baseDeps,
+      callFree,
+      callPaid,
+      signal: controller.signal,
+    });
+
+    expect(callFree.mock.calls[0]![0]!.signal).toBe(controller.signal);
+    expect(callPaid.mock.calls[0]![0]!.signal).toBe(controller.signal);
+  });
 });
 
 describe('parseIdentify', () => {
@@ -211,6 +270,26 @@ describe('parseIdentify', () => {
 
   it('rejects when confidence is NaN/Infinity', () => {
     expect(parseIdentify('{"species_slug":"a","confidence":null}')).toBeNull();
+  });
+
+  it('caps alternatives at 5 with early exit (does not validate beyond cap)', () => {
+    // 100 alternatives — early exit means we should stop after 5 valid ones
+    // so a hostile model returning a huge array can't DoS the parser.
+    const alts = Array.from({ length: 100 }, (_, i) => ({
+      species_slug: `a${i}`,
+      species_label: `A${i}`,
+      confidence: 5,
+    }));
+    const raw = JSON.stringify({
+      species_slug: 'main',
+      species_label: 'Main',
+      confidence: 80,
+      alternatives: alts,
+    });
+    const result = parseIdentify(raw);
+    expect(result?.alternatives).toHaveLength(5);
+    // Verify we got the FIRST five (early-exit), not e.g. the last five
+    expect(result?.alternatives.map((a) => a.species_slug)).toEqual(['a0', 'a1', 'a2', 'a3', 'a4']);
   });
 
   it('drops malformed alternative entries silently', () => {
