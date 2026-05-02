@@ -19,6 +19,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7f64db16-5fb6-47c6-aaec-8b81bd6cb409"
+      }
+    },
+    "owner": "anandsatch"
   }
 }
