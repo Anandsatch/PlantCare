@@ -180,28 +180,35 @@ W=weekend, S=Saturday, U=Sunday. ~6 hours per half-day = 60 hours of focused TL 
 
 ---
 
-### Epic E1 — Backend MVP (identify endpoint + LLM router)
+### Epic E1 — Backend MVP (4 LLM proxy endpoints + eval suite)
 
-**Goal:** `/api/identify` working end-to-end with the structured-JSON router and free-tier model.
+**Goal:** All four LLM proxy endpoints (`/api/identify`, `/api/diagnose`, `/api/consult`, `/api/review`) working end-to-end on a single tiered router (free → paid escalation), plus eval suites.
 **Phase:** P1
 **Duration (team):** 5 days
 **Owner:** BE1
-**Blocks:** E5 (Camera+diagnose), E6 (Watering++)
+**Blocks:** E5 (Camera+diagnose), E6 (Watering++), E8 (Add note + consult), E9 (Weekly review)
+
+**Restructured 2026-05-02:** original 10-ticket plan collapsed into 5. The router pattern (free → paid on parse-fail or low-confidence, no-op escalation gate seam) is built once in E1-001 and reused per-endpoint as thin response-schema + system-prompt wrappers in 002/003/004. Pulling diagnose/consult/review forward into E1 lets E5/E8/E9 mobile screens consume real endpoints instead of stubs.
+
+**V1 scope locks (do NOT add):** KV rate limit, KV escalation budget, `/api/budget` endpoint, Layer-1 text classifier, Layer-5 image-is-plant gate. Rate limit + budget tracked client-side in SQLite per V1 lock; layered safety lives in later epics if needed.
 
 | ID | Title | Owner | Est | Dependencies | Skills | Review path |
 |----|-------|-------|-----|--------------|--------|-------------|
-| **E1-001** | Hono scaffold on Cloudflare Workers; `wrangler.toml`; deploy stub | BE1 | M | E0-001 | `/feature-dev` | `/codex review` |
-| **E1-002** | OpenRouter client wrapper (free model + paid model functions) with timeout + retry | BE1 | M | E1-001 | `/feature-dev` + OpenRouter docs | `/codex review` |
-| **E1-003** | `/api/identify` endpoint with strict JSON system prompt + safe parser | BE1 | L | E1-002 | `/feature-dev` | `/codex review` + Claude subagent challenge |
-| **E1-004** | LLM router: free → paid escalation on JSON parse fail OR confidence < 70 | BE1 | L | E1-003 | `/feature-dev` | adversarial review (find threshold edge cases) |
-| **E1-005** | KV-backed escalation budget (3 paid escalations / device / day) | BE1 | M | E1-004 | `/feature-dev` | `/codex review` |
-| **E1-006** | KV-backed rate limit (50 req/device/day for free model) | BE1 | M | E1-001 | `/feature-dev` | `/codex review` |
-| **E1-007** | `/api/budget` endpoint (returns `{used, remaining, resets_at}` for the meter) | BE1 | S | E1-005, E1-006 | `/feature-dev` | `/codex review` |
-| **E1-008** | Layer-1 input classifier (text-only "is this a plant question?") + 2-stage output filter | BE1 | M | E1-002 | `/feature-dev` + small text model docs | adversarial review (prompt injection attempts) |
-| **E1-009** | Layer-5 image-is-plant gate (vision call before diagnose) | BE1 | M | E1-002 | `/feature-dev` | `/codex review` |
-| **E1-010** | LLM eval harness (vitest snapshot, 10 fixture images for /api/identify) | BE1 + TL | M | E1-004 | `/feature-dev` + TL provides fixtures | TL approves baseline |
+| **E1-001** | `/api/identify` + tiered LLM router foundation (OpenRouter wrapper, safeJsonParse, escalation seam, route handler with multipart + X-Device-Id) | BE1 | L | E0-001 | `/feature-dev` | `/codex review` + Claude subagent challenge |
+| **E1-002** | `/api/diagnose` — vision endpoint reusing router; new system prompt → `{disease_slug, confidence, fix_steps[], severity}`; thin parseDiagnose | BE1 | M | E1-001 | `/feature-dev` | `/codex review` |
+| **E1-003** | `/api/consult` — text-only endpoint (note + plant context → revised watering rec); same router shape, different message construction | BE1 | M | E1-001 | `/feature-dev` | `/codex review` + adversarial (prompt injection in user note) |
+| **E1-004** | `/api/review` — text-only endpoint (last-7-days data → narrative); structured response schema | BE1 | M | E1-001 | `/feature-dev` | `/codex review` |
+| **E1-005** | LLM eval harness (vitest snapshot, ±10 confidence band; fixtures for identify + diagnose + consult + review) | BE1 + TL | L | E1-002, E1-003, E1-004 | `/feature-dev` + TL provides fixtures | TL approves baseline |
 
-**Definition of done (epic):** `curl POST /api/identify` with a real plant photo returns `{species_slug, species_label, confidence, alternatives[], source}` JSON. Eval suite passes with confidence within ±10 of baseline. Rate limit triggers at 51st request. Escalation triggers correctly on JSON parse fail.
+**Definition of done (epic):** `curl POST /api/{identify,diagnose,consult,review}` against the deployed Worker returns the typed `ApiResult<T>` JSON for each endpoint. Eval suite passes with confidence within ±10 of baseline on all four. Free → paid escalation triggers correctly on JSON parse fail and confidence < 70 across endpoints.
+
+**Post-MVP (deferred from original E1, do not pull back without explicit scope change):**
+- KV-backed escalation budget (3/device/day) and rate limit (50/device/day)
+- `/api/budget` endpoint for the budget meter
+- Layer-1 text classifier (off-topic rejection at the edge)
+- Layer-5 image-is-plant gate (cat-rejection before diagnose)
+- Workers Analytics Engine telemetry
+- Staging/production env split in `wrangler.toml` (owned by E13)
 
 ---
 
@@ -569,8 +576,8 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 
 | Epic | Tickets | Status | Blocker |
 |------|---------|--------|---------|
-| E0 Foundation | 7/7 | ✅ DONE — all tickets landed on `Anandsatch/plantcare-v1-build`; ready for `/gstack-ship` on PR #1 | — |
-| E1 Backend MVP | 0/5 | not started | E0 (scope shrunk: no /weather, no KV, no /budget — tracked client-side in V1) |
+| E0 Foundation | 7/7 | ✅ DONE — shipped 2026-05-02 as v0.1.0.0 (PR #1, fd18fbb) | — |
+| E1 Backend MVP | 0/5 | 🟡 IN PROGRESS — E1-001 `/api/identify` + router foundation implemented on `Anandsatch/plantcare-v1-e1-backend` (34 tests passing), in adversarial review pre-ship | E1-002..004 unblocked once E1-001 ships |
 | E2 Mobile foundation | 0/13 | not started | E0 |
 | E3 Plants list | 0/5 | not started | E2 |
 | E4 Plant detail + watering v1 | 0/8 | not started | E2 |
@@ -583,7 +590,7 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 | E11 A11y + budget meter | 0/7 | not started | all UI epics, E1 (budget meter uses local SQLite counter, not /api/budget) |
 | E12 Maestro + final QA | 0/10 | not started | all feature epics |
 | E13 Distribution | 0/5 | not started | E12 |
-| **TOTAL** | **7/104 tickets** | **7%** | E0 done, E1 backend MVP next |
+| **TOTAL** | **7/99 tickets** | **7%** | E0 done; E1-001 implemented, in adversarial review pre-ship |
 
 ---
 

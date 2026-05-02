@@ -1,10 +1,8 @@
 import { Hono } from 'hono';
+import type { HonoEnv } from './env';
+import { identifyRoute } from './routes/identify';
 
-type Bindings = {
-  OPENROUTER_API_KEY: string;
-};
-
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono<HonoEnv>();
 
 app.get('/', (c) =>
   c.json({ ok: true, service: 'plantcare-api', version: '0.0.0' }),
@@ -12,10 +10,12 @@ app.get('/', (c) =>
 
 app.get('/health', (c) => c.json({ ok: true, ts: Date.now() }));
 
+app.route('/api/identify', identifyRoute);
+
 // Endpoints land in:
-//   E1 — POST /api/identify
-//   E5 — POST /api/diagnose
-//   E8 — POST /api/consult
-//   E9 — POST /api/review
+//   E1 — POST /api/identify   ✓
+//   E1 — POST /api/diagnose
+//   E1 — POST /api/consult
+//   E1 — POST /api/review
 
 export default app;
