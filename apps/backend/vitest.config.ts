@@ -10,6 +10,15 @@ export default defineWorkersConfig({
     poolOptions: {
       workers: {
         wrangler: { configPath: './wrangler.toml' },
+        miniflare: {
+          // OPENROUTER_API_KEY is a production secret; provide a dummy in tests
+          // so route handlers don't 500 with 'service_unconfigured'. Tests
+          // intercept fetch via cloudflare:test fetchMock so this never goes
+          // over the wire.
+          bindings: {
+            OPENROUTER_API_KEY: 'test-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+          },
+        },
       },
     },
   },
