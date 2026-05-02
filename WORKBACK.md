@@ -569,7 +569,7 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 
 | Epic | Tickets | Status | Blocker |
 |------|---------|--------|---------|
-| E0 Foundation | 5/7 | in progress (E0-001/003/004/007 done + on origin; E0-002 builds finished, awaiting device install confirmation; E0-005/006 blocked on E0-002) | E0-002 device install |
+| E0 Foundation | 5/7 | in progress (E0-001/002/003/004/007 done + on origin; E0-005/006 in progress in worktrees) | — |
 | E1 Backend MVP | 0/5 | not started | E0 (scope shrunk: no /weather, no KV, no /budget — tracked client-side in V1) |
 | E2 Mobile foundation | 0/13 | not started | E0 |
 | E3 Plants list | 0/5 | not started | E2 |
