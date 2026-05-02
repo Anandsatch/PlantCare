@@ -1,0 +1,27 @@
+{
+  "name": "plantcare",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "mobile:start": "bun --cwd apps/mobile start",
+    "mobile:ios": "bun --cwd apps/mobile ios",
+    "mobile:android": "bun --cwd apps/mobile android",
+    "backend:dev": "bun --cwd apps/backend dev",
+    "backend:deploy": "bun --cwd apps/backend deploy",
+    "test": "bun run test:mobile && bun run test:backend",
+    "test:mobile": "bun --cwd apps/mobile test",
+    "test:backend": "bun --cwd apps/backend test",
+    "typecheck": "bun --cwd apps/mobile typecheck && bun --cwd apps/backend typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.3.0",
+    "node": ">=20.0.0"
+  }
+}

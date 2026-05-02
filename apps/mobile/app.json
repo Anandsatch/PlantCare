@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "PlantCare",
+    "slug": "plantcare",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "plantcare",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.anandsatch.plantcare"
+    },
+    "android": {
+      "package": "com.anandsatch.plantcare"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,16 @@
+name = "plantcare-api"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets (set via `wrangler secret put`):
+#   wrangler secret put OPENROUTER_API_KEY
+
+[observability]
+enabled = true
+
+# V1 keeps rate-limit + budget tracking client-side.
+# Enable KV here if/when we move them server-side post-MVP:
+# [[kv_namespaces]]
+# binding = "BUDGET"
+# id = "<id from `wrangler kv namespace create BUDGET`>"
