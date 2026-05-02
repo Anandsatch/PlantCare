@@ -569,7 +569,7 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 
 | Epic | Tickets | Status | Blocker |
 |------|---------|--------|---------|
-| E0 Foundation | 3/7 | in progress (E0-001/003/004 done; E0-002 EAS build awaiting user device install; E0-005/006/007 next) | — |
+| E0 Foundation | 5/7 | in progress (E0-001/003/004/007 done + on origin; E0-002 builds finished, awaiting device install confirmation; E0-005/006 blocked on E0-002) | E0-002 device install |
 | E1 Backend MVP | 0/5 | not started | E0 (scope shrunk: no /weather, no KV, no /budget — tracked client-side in V1) |
 | E2 Mobile foundation | 0/13 | not started | E0 |
 | E3 Plants list | 0/5 | not started | E2 |
@@ -583,7 +583,7 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 | E11 A11y + budget meter | 0/7 | not started | all UI epics, E1 (budget meter uses local SQLite counter, not /api/budget) |
 | E12 Maestro + final QA | 0/10 | not started | all feature epics |
 | E13 Distribution | 0/5 | not started | E12 |
-| **TOTAL** | **3/104 tickets** | **3%** | — |
+| **TOTAL** | **5/104 tickets** | **5%** | — |
 
 ---
 
