@@ -14,7 +14,8 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@plantcare/api-types": ["../../packages/api-types/src/index.ts"]
+      "@plantcare/api-types": ["../../packages/api-types/src/index.ts"],
+      "@plantcare/api-types/*": ["../../packages/api-types/src/*"]
     }
   },
   "include": ["src/**/*", "test/**/*"]
