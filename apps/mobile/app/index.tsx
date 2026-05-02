@@ -1,12 +1,14 @@
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View } from 'react-native';
 
-// E0-001 placeholder. E2/E3 replace this with the real Plants list (A-1).
+// E0-006 placeholder: the Plants list is the home route (no tabs in V1).
+// Renders the empty state so Maestro can assert it on launch. E3 replaces
+// this with the real list (PlantCard, EmptyGardenWelcome, FAB) per A-1.
 export default function Index() {
   return (
-    <View style={styles.container}>
+    <View testID="plants-list-empty" style={styles.container}>
       <Text style={styles.title}>PlantCare</Text>
-      <Text style={styles.subtitle}>Your garden, here.</Text>
+      <Text style={styles.subtitle}>No plants yet</Text>
       <StatusBar style="auto" />
     </View>
   );

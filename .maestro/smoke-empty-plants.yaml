@@ -1,0 +1,6 @@
+appId: com.anandsatch.plantcare
+---
+- launchApp
+- assertVisible:
+    id: "plants-list-empty"
+- assertVisible: "No plants yet"

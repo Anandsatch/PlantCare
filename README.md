@@ -41,6 +41,12 @@ bun run mobile:ios       # or :android
 bun run backend:dev
 ```
 
+## Testing
+
+- **Unit / component (mobile):** `bun test` in `apps/mobile/`
+- **Unit / integration (backend):** `bun test` in `apps/backend/`
+- **E2E (Maestro):** see [`.maestro/README.md`](./.maestro/README.md) — flows run against the EAS dev build on iOS Simulator or a connected Android device.
+
 ## CI / Code Review
 
 CI runs **typecheck + jest (mobile) + vitest (backend)** on every push and PR.
