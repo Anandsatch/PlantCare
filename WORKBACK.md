@@ -569,21 +569,21 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 
 | Epic | Tickets | Status | Blocker |
 |------|---------|--------|---------|
-| E0 Foundation | 0/7 | not started | — |
-| E1 Backend MVP | 0/10 | not started | E0 |
+| E0 Foundation | 3/7 | in progress (E0-001/003/004 done; E0-002 EAS build awaiting user device install; E0-005/006/007 next) | — |
+| E1 Backend MVP | 0/5 | not started | E0 (scope shrunk: no /weather, no KV, no /budget — tracked client-side in V1) |
 | E2 Mobile foundation | 0/13 | not started | E0 |
 | E3 Plants list | 0/5 | not started | E2 |
 | E4 Plant detail + watering v1 | 0/8 | not started | E2 |
 | E5 Camera + diagnose + add | 0/13 | not started | E1, E2 |
-| E6 Watering ++ | 0/7 | not started | E1, E2, E4 |
+| E6 Watering ++ | 0/7 | not started | E1, E2, E4 (Open-Meteo called direct from device — no backend /weather endpoint) |
 | E7 Sync queue | 0/8 | not started | E2, E5 |
 | E8 Add note + consult | 0/6 | not started | E1, E4 |
 | E9 Weekly review | 0/6 | not started | E1, E2, E4 |
 | E10 Dark mode | 0/4 | not started | all UI epics |
-| E11 A11y + budget meter | 0/7 | not started | all UI epics, E1 |
+| E11 A11y + budget meter | 0/7 | not started | all UI epics, E1 (budget meter uses local SQLite counter, not /api/budget) |
 | E12 Maestro + final QA | 0/10 | not started | all feature epics |
 | E13 Distribution | 0/5 | not started | E12 |
-| **TOTAL** | **0/109 tickets** | **0%** | — |
+| **TOTAL** | **3/104 tickets** | **3%** | — |
 
 ---
 
