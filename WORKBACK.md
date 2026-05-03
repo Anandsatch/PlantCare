@@ -577,7 +577,7 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 | Epic | Tickets | Status | Blocker |
 |------|---------|--------|---------|
 | E0 Foundation | 7/7 | ✅ DONE — shipped 2026-05-02 as v0.1.0.0 (PR #1, fd18fbb) | — |
-| E1 Backend MVP | 0/5 | 🟡 IN PROGRESS — E1-001 `/api/identify` + router foundation implemented on `Anandsatch/plantcare-v1-e1-backend` (34 tests passing), in adversarial review pre-ship | E1-002..004 unblocked once E1-001 ships |
+| E1 Backend MVP | 2/5 | 🟡 IN PROGRESS — E1-001 `/api/identify` shipped 2026-05-02 (v0.1.1.0); E1-002 `/api/diagnose` shipped 2026-05-03 (v0.1.2.0); router refactored to factory + parseImageUpload extracted | E1-003..005 unblocked |
 | E2 Mobile foundation | 0/13 | not started | E0 |
 | E3 Plants list | 0/5 | not started | E2 |
 | E4 Plant detail + watering v1 | 0/8 | not started | E2 |
@@ -590,10 +590,20 @@ Update this table per ticket as work progresses. Use it to drive standups and un
 | E11 A11y + budget meter | 0/7 | not started | all UI epics, E1 (budget meter uses local SQLite counter, not /api/budget) |
 | E12 Maestro + final QA | 0/10 | not started | all feature epics |
 | E13 Distribution | 0/5 | not started | E12 |
-| **TOTAL** | **7/99 tickets** | **7%** | E0 done; E1-001 implemented, in adversarial review pre-ship |
+| **TOTAL** | **9/99 tickets** | **9%** | E0 done; E1-001 + E1-002 shipped; E1-003 next |
 
 ---
 
 ## Next action
 
-If TL agrees with this workback plan: kick off **E0-001** (Init monorepo). Suggested skill chain: `/gstack-feature-dev` for the scaffold → `/codex review` for the structure → `/ship` to land. From there each epic unblocks on schedule.
+E1-002 shipped 2026-05-03. Next: **E1-003** `/api/consult` — text-only endpoint (first non-vision caller of the router; will surface whether `RouterInput` should become a discriminated union). Same per-ticket workflow as E1-001 + E1-002.
+
+---
+
+## Post-V1 followups (captured during V1 build, defer to phase 2+)
+
+Tracked here so they don't rot in chat history. Each item has a trigger condition — don't pull forward without it.
+
+| ID | Item | Trigger to actually do it | Captured |
+|----|------|---------------------------|----------|
+| **PV1-001** | Server-side cheap-model verifier/normalizer for `/api/diagnose` output. Run a small free text model (≤8K context — diagnose JSON is tiny, no need for a big context window) as a second pass to normalize severity, validate fix_steps, and sanity-check the diagnosis against the symptoms. Today V1 handles drift via deterministic string normalization (Option C in E1-002). | Eval suite (E1-005 / E5-002) shows free-tier diagnose accuracy < 70% on fixtures, OR dogfooding surfaces "plausible but wrong" diagnoses that string fixes can't catch. Need data, not vibes. | 2026-05-03, during E1-002 design |

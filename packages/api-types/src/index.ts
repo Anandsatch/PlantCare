@@ -1,5 +1,6 @@
 // Shared types between mobile and backend.
-// Endpoint shapes are added in E1 (identify), E5 (diagnose), E8 (consult), E9 (review).
+// Endpoint shapes: E1-001 added identify; E1-002 adds diagnose. Consult and
+// review land in E8 / E9.
 
 // Note on `ok` semantics: `ok: true` means "the request was accepted and the
 // caller does NOT need to retry." `queued` is `ok: true` because the work was
@@ -40,5 +41,34 @@ export type IdentifyResponse = {
   confidence: number; // 0-100
   alternatives: IdentifyAlternative[];
   source: IdentifySource;
+  latency_ms: number;
+};
+
+// ─── /api/diagnose (E1-002) ──────────────────────────────────────────────
+// Same router contract as identify — `source` discriminator is identical.
+// Healthy plant convention: disease_slug='healthy', severity='low', fix_steps=[].
+// Cannot tell convention: disease_slug='unknown', confidence<30 (mirrors identify).
+export type DiagnoseSource = IdentifySource;
+
+// Severity drives the A-3 result UI badge tone (low=cream, medium=tan,
+// high=warning). Default coercion is 'medium' when the model returns garbage,
+// not 'low' — defaulting low would silently downgrade serious problems. See
+// PV1-001 in WORKBACK.md for the post-V1 verifier-model followup.
+export type DiagnoseSeverity = 'low' | 'medium' | 'high';
+
+export type DiagnoseAlternative = {
+  disease_slug: string;
+  disease_label: string;
+  confidence: number; // 0-100
+};
+
+export type DiagnoseResponse = {
+  disease_slug: string; // snake_case, or 'healthy', or 'unknown'
+  disease_label: string;
+  confidence: number; // 0-100
+  severity: DiagnoseSeverity;
+  fix_steps: string[]; // 0..8 short imperative bullets
+  alternatives: DiagnoseAlternative[];
+  source: DiagnoseSource;
   latency_ms: number;
 };

@@ -2,6 +2,24 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.2.0] - 2026-05-03
+
+E1-002 — second of four LLM proxy endpoints. The backend can now diagnose a sick plant from a photo: mobile POSTs an image, backend asks a free vision model first, escalates to a paid model only when the free model can't answer confidently. Same tiered router as identify, different system prompt + response shape. Not yet wired to mobile (E5 will consume it).
+
+### Added
+- `POST /api/diagnose` on the Cloudflare Worker. Same multipart contract as `/api/identify` (image file + `X-Device-Id` header, MIME + magic-byte validation, 8MB ceiling). Returns `ApiResult<DiagnoseResponse>` with disease + confidence + severity + fix steps + alternatives + which model answered.
+- `DiagnoseResponse` shape: `{disease_slug, disease_label, confidence, severity, fix_steps[], alternatives[], source, latency_ms}`. Healthy convention: `disease_slug='healthy'`, severity `'low'`, empty fix_steps. Cannot-tell convention: `disease_slug='unknown'` with confidence below 30.
+- `parseDiagnose` with tolerant severity normalization — synonym map (`severe`→`high`, `moderate`→`medium`, `mild`→`low`) and ASCII-letter-run extraction so prose tails like `"high — likely fatal"` still match. Defaults to `'medium'` (not `'low'`) on garbage so serious diagnoses can't be silently downgraded. Cap of 8 fix_steps and 5 alternatives, each with early-exit and per-entry validation against hostile model output.
+- 48 backend tests across diagnose router boundaries, parser edge cases (severity drift, fix_steps cap, malformed alternatives), and HTTP-level multipart validation. Total backend tests: 78.
+
+### Changed
+- `router.ts` refactored to a generic `createLlmRouter<T extends {confidence:number}>` factory. Both `identifyRouter` and `diagnoseRouter` are built on it; the abort/escalation/fallback state machine lives in one place. Behavior preserved for identify (existing 16 router tests stay green).
+- `routes/identify.ts` and `routes/diagnose.ts` share a `parseImageUpload(c)` helper covering multipart parse, MIME allowlist, 8MB ceiling, magic-byte sniff, base64 conversion. Security-critical validation now lives in one file.
+- `OPENROUTER_API_KEY` check now runs before multipart body read on both routes — a misconfigured Worker no longer burns memory parsing 8MB uploads it would immediately reject.
+
+### Deferred (post-V1)
+- **PV1-001** in WORKBACK.md: server-side cheap-model verifier to normalize/sanity-check `/api/diagnose` output. V1 handles severity drift via deterministic string normalization; verifier earns its keep only if the eval suite (E5-002) shows free-tier accuracy below 70% on fixtures.
+
 ## [0.1.1.0] - 2026-05-02
 
 E1-001 — first of four LLM proxy endpoints. The backend can now identify a plant from a photo: mobile POSTs an image, backend asks a free vision model first, escalates to a paid model only when the free model can't answer confidently. Not yet wired to mobile (E2/E5 will consume it).
