@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { HonoEnv } from './env';
 import { identifyRoute } from './routes/identify';
+import { diagnoseRoute } from './routes/diagnose';
 
 const app = new Hono<HonoEnv>();
 
@@ -11,10 +12,11 @@ app.get('/', (c) =>
 app.get('/health', (c) => c.json({ ok: true, ts: Date.now() }));
 
 app.route('/api/identify', identifyRoute);
+app.route('/api/diagnose', diagnoseRoute);
 
 // Endpoints land in:
 //   E1 — POST /api/identify   ✓
-//   E1 — POST /api/diagnose
+//   E1 — POST /api/diagnose   ✓
 //   E1 — POST /api/consult
 //   E1 — POST /api/review
 
