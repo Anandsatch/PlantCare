@@ -9,6 +9,8 @@
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "vitest run --config vitest.eval.config.ts",
+    "eval:watch": "vitest --config vitest.eval.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

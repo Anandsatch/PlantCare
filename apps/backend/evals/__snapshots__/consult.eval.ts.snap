@@ -1,0 +1,44 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`/api/consult eval (mock mode) > parsed shape snapshot across all fixtures 1`] = `
+[
+  {
+    "confidence": 84,
+    "kind": "recommendation",
+    "name": "leaves_drooping_water_more",
+    "reasoning": "Drooping plus dry soil one inch down suggests under-watering — shorten the interval from 7 to 5 days.",
+    "revised_interval_days": 5,
+    "source": "free",
+  },
+  {
+    "confidence": 78,
+    "kind": "recommendation",
+    "name": "yellow_leaves_overwatered",
+    "reasoning": "Yellowing lower leaves on a 4-day schedule typically signals overwatering — extend to 8 days and check drainage.",
+    "revised_interval_days": 8,
+    "source": "free",
+  },
+  {
+    "confidence": 76,
+    "kind": "recommendation",
+    "name": "going_on_vacation",
+    "reasoning": "A deep watering before a 10-day absence is reasonable for most houseplants — soil moisture should bridge the gap.",
+    "revised_interval_days": 10,
+    "source": "free",
+  },
+  {
+    "confidence": 81,
+    "kind": "recommendation",
+    "name": "winter_dormant_period",
+    "reasoning": "Winter dormancy slows water uptake — extending the interval to 14 days lets soil dry between drinks.",
+    "revised_interval_days": 14,
+    "source": "free",
+  },
+  {
+    "kind": "rejected_off_topic",
+    "name": "off_topic_dog_food",
+    "reason": "not_plant_related",
+    "source": "free",
+  },
+]
+`;

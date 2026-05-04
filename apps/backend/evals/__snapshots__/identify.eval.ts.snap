@@ -1,0 +1,110 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`/api/identify eval (mock mode) > parsed shape snapshot across all fixtures 1`] = `
+[
+  {
+    "alternatives": [
+      {
+        "confidence": 6,
+        "species_label": "Heartleaf Philodendron",
+        "species_slug": "philodendron_hederaceum",
+      },
+    ],
+    "confidence": 92,
+    "name": "monstera_deliciosa_healthy",
+    "source": "free",
+    "species_label": "Monstera Deliciosa",
+    "species_slug": "monstera_deliciosa",
+  },
+  {
+    "alternatives": [],
+    "confidence": 88,
+    "name": "pothos_healthy",
+    "source": "free",
+    "species_label": "Golden Pothos",
+    "species_slug": "epipremnum_aureum",
+  },
+  {
+    "alternatives": [],
+    "confidence": 90,
+    "name": "snake_plant_healthy",
+    "source": "free",
+    "species_label": "Snake Plant",
+    "species_slug": "sansevieria_trifasciata",
+  },
+  {
+    "alternatives": [
+      {
+        "confidence": 9,
+        "species_label": "Rubber Plant",
+        "species_slug": "ficus_elastica",
+      },
+    ],
+    "confidence": 84,
+    "name": "fiddle_leaf_fig_healthy",
+    "source": "free",
+    "species_label": "Fiddle Leaf Fig",
+    "species_slug": "ficus_lyrata",
+  },
+  {
+    "alternatives": [],
+    "confidence": 86,
+    "name": "zz_plant_healthy",
+    "source": "free",
+    "species_label": "ZZ Plant",
+    "species_slug": "zamioculcas_zamiifolia",
+  },
+  {
+    "alternatives": [],
+    "confidence": 89,
+    "name": "spider_plant_healthy",
+    "source": "free",
+    "species_label": "Spider Plant",
+    "species_slug": "chlorophytum_comosum",
+  },
+  {
+    "alternatives": [
+      {
+        "confidence": 14,
+        "species_label": "Tree Philodendron",
+        "species_slug": "philodendron_bipinnatifidum",
+      },
+    ],
+    "confidence": 74,
+    "name": "monstera_partial_leaf",
+    "source": "free",
+    "species_label": "Monstera Deliciosa",
+    "species_slug": "monstera_deliciosa",
+  },
+  {
+    "alternatives": [
+      {
+        "confidence": 18,
+        "species_label": "Satin Pothos",
+        "species_slug": "scindapsus_pictus",
+      },
+    ],
+    "confidence": 71,
+    "name": "pothos_partial_vine",
+    "source": "free",
+    "species_label": "Golden Pothos",
+    "species_slug": "epipremnum_aureum",
+  },
+  {
+    "alternatives": [],
+    "confidence": 73,
+    "name": "snake_plant_low_light",
+    "source": "free",
+    "species_label": "Snake Plant",
+    "species_slug": "sansevieria_trifasciata",
+  },
+  {
+    "alternatives": [],
+    "confidence": 8,
+    "name": "cat_not_a_plant",
+    "source": "free",
+    "species_label": "Unknown",
+    "species_slug": "unknown",
+  },
+]
+`;

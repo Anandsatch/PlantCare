@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`/api/review eval (mock mode) > parsed shape snapshot across all fixtures 1`] = `
+[
+  {
+    "confidence": 82,
+    "headline": "A quietly busy week, with one rescue",
+    "name": "mixed_week_six_plants",
+    "narrative": "You held a steady rhythm across six plants this week — fourteen drinks given, four thoughtful skips taken. Fig's diagnosis run was the week's small drama, and the rest of your garden moved without incident. Steve and Chloe both got the consistent attention they prefer. A good editorial week for the conservatory.",
+    "per_plant": [
+      {
+        "observation": "Steve drank three times — exactly his weekly cadence.",
+        "species_slug": "monstera_deliciosa",
+      },
+      {
+        "observation": "Vinnie skipped once mid-week, otherwise on schedule.",
+        "species_slug": "epipremnum_aureum",
+      },
+      {
+        "observation": "Spike took a single drink and held steady, as snake plants do.",
+        "species_slug": "sansevieria_trifasciata",
+      },
+      {
+        "observation": "Fig got a diagnosis check and three waterings — recovery looks underway.",
+        "species_slug": "ficus_lyrata",
+      },
+      {
+        "observation": "Two drinks, one skipped day. Comfortable in its rhythm.",
+        "species_slug": "zamioculcas_zamiifolia",
+      },
+      {
+        "observation": "Chloe matched Steve at three waterings this week.",
+        "species_slug": "chlorophytum_comosum",
+      },
+    ],
+    "source": "free",
+  },
+]
+`;
