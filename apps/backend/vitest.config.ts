@@ -7,6 +7,11 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 // the same value as wrangler.toml.
 export default defineWorkersConfig({
   test: {
+    // Unit + integration tests live in test/. Evals live in evals/ and run
+    // under a plain Node config (vitest.eval.config.ts) — they need neither
+    // workerd nor Hono request mocking, just the parser + router state
+    // machine driven by mocked OpenRouter responses.
+    include: ['test/**/*.test.ts'],
     poolOptions: {
       workers: {
         wrangler: { configPath: './wrangler.toml' },
