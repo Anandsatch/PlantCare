@@ -2,6 +2,19 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.6.0] - 2026-05-04
+
+E2-001 — `useTheme()` hook. First mobile-foundation ticket of Epic E2. Wraps `@plantcare/theme`'s already-shipped `lightTheme` (Conservatory) and `darkTheme` (Midnight Conservatory) constants in a one-line hook driven by RN's `useColorScheme()`. No `<ThemeProvider>` and no `useMemo` — module-level frozen constants give stable identity across renders, so RN re-renders consumers automatically when the OS appearance flips. Per the master plan: no manual theme override in V1; the OS decides.
+
+### Added
+- `apps/mobile/src/hooks/useTheme.ts` — `useColorScheme() === 'dark' ? darkTheme : lightTheme`. Anything else (`null`/`undefined` during cold start, `'unspecified'` on Android with no preference, `'light'`) falls through to light, matching the iOS factory default and DESIGN.md's cream-as-canonical-surface stance.
+- `apps/mobile/src/hooks/__tests__/useTheme.test.tsx` — 7 tests: light → Conservatory, dark → Midnight, null/undefined/'unspecified' → light, reference stability across same-scheme renders, reference flip on scheme change. Mock widens RN's legacy `ColorSchemeName` (which incorrectly omits null in the public types) so the cold-start branches are exercised.
+- `apps/mobile/src/hooks/index.ts` barrel.
+
+### Notes
+- The mock cast (`as unknown as jest.Mock<WidenedScheme, []>`) works around `react-native`'s legacy public-types entry declaring `useColorScheme(): ColorSchemeName` without `null | undefined`. The newer `types_generated/` entry is accurate, but the package's `"types"` field still resolves the legacy version. The runtime contract — null during cold start, undefined on background-resume — is real and tested.
+- DOD criterion "<100ms theme switch via system setting" is structurally satisfied: RN re-renders `useColorScheme` consumers on `Appearance` change events, and the hook does no async work. Empirical measurement waits on a live mockup screen (E2-013 Component Garden).
+
 ## [0.1.5.0] - 2026-05-04
 
 E1-005 — LLM eval harness. With all four endpoints (identify, diagnose, consult, review) sharing the tiered router, this PR adds the regression suite that catches contract drift on the parser + router state machine without burning OpenRouter quota on every push. Two-mode design: the default mock mode drives canned LLM JSON through the real router and asserts the parsed shape; a future EVAL_REAL_API=1 mode (scaffolded as `.todo`) will hit live OpenRouter and use the same fixtures as the ±10 confidence band baseline. The mock-mode bug-catchers are the snapshot files plus a per-endpoint `expectCallArgs` that validates the OpenRouter wire shape (kind, imageDataUrl/userMessage, system-prompt fragment, apiKey).
