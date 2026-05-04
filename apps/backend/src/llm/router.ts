@@ -30,8 +30,15 @@ import type {
   DiagnoseSeverity,
   ConsultRecommendation,
   ConsultRejection,
+  ReviewResponse,
+  ReviewPlantObservation,
 } from '@plantcare/api-types';
-import { SYSTEM_PROMPT_IDENTIFY, SYSTEM_PROMPT_DIAGNOSE, SYSTEM_PROMPT_CONSULT } from './prompts';
+import {
+  SYSTEM_PROMPT_IDENTIFY,
+  SYSTEM_PROMPT_DIAGNOSE,
+  SYSTEM_PROMPT_CONSULT,
+  SYSTEM_PROMPT_REVIEW,
+} from './prompts';
 import { callFree, callPaid, type CallArgs } from './openrouter';
 import { safeJsonParse } from './safe-json';
 
@@ -42,6 +49,10 @@ const MAX_REASONING_LEN = 500;
 const MAX_REJECTION_REASON_LEN = 200;
 const MIN_INTERVAL_DAYS = 1;
 const MAX_INTERVAL_DAYS = 30;
+const MAX_HEADLINE_LEN = 80;
+const MAX_NARRATIVE_LEN = 400;
+const MAX_OBSERVATION_LEN = 200;
+const MAX_OBSERVATIONS = 50;
 
 export type RouterDeps = {
   apiKey: string;
@@ -447,6 +458,74 @@ export const consultRouter = createLlmRouter<ParsedConsult>({
     kind: 'recommendation',
     revised_interval_days: 7,
     reasoning: "I couldn't get a recommendation right now. Try again in a moment.",
+    confidence: 0,
+  }),
+});
+
+// ─── /api/review ─────────────────────────────────────────────────────────
+
+type ParsedReview = Omit<ReviewResponse, 'source' | 'latency_ms'>;
+
+export function parseReview(raw: string): ParsedReview | null {
+  const obj = safeJsonParse<Record<string, unknown>>(raw);
+  if (!obj || typeof obj !== 'object') return null;
+
+  const headline = obj.headline;
+  const narrative = obj.narrative;
+  const conf = obj.confidence;
+
+  if (typeof headline !== 'string') return null;
+  const trimmedHeadline = headline.trim();
+  if (!trimmedHeadline) return null;
+
+  if (typeof narrative !== 'string') return null;
+  const trimmedNarrative = narrative.trim();
+  if (!trimmedNarrative) return null;
+
+  if (typeof conf !== 'number' || !Number.isFinite(conf)) return null;
+
+  // per_plant is required as an array (the system prompt mandates it). A
+  // missing or non-array value would mask a model that didn't follow the
+  // contract — escalate. Empty array is valid (zero plants in input).
+  if (!Array.isArray(obj.per_plant)) return null;
+
+  const per_plant: ReviewPlantObservation[] = [];
+  for (const entry of obj.per_plant) {
+    if (per_plant.length >= MAX_OBSERVATIONS) break;
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.species_slug !== 'string') continue;
+    const slug = e.species_slug.trim();
+    if (!slug) continue;
+    if (typeof e.observation !== 'string') continue;
+    const obs = e.observation.trim();
+    if (!obs) continue;
+    per_plant.push({
+      species_slug: slug,
+      observation: obs.slice(0, MAX_OBSERVATION_LEN),
+    });
+  }
+
+  return {
+    headline: trimmedHeadline.slice(0, MAX_HEADLINE_LEN),
+    narrative: trimmedNarrative.slice(0, MAX_NARRATIVE_LEN),
+    per_plant,
+    confidence: clamp(Math.round(conf), 0, 100),
+  };
+}
+
+export const reviewRouter = createLlmRouter<ParsedReview>({
+  systemPrompt: SYSTEM_PROMPT_REVIEW,
+  parse: asOk(parseReview),
+  // Degraded fallback: confidence=0 so the mobile A-6 surface can show the
+  // same "couldn't pull this together" affordance it shows for any other
+  // free_failed source. Headline + narrative are the user-visible copy.
+  // per_plant is empty on fallback — A-6 already renders local ledgers per
+  // plant, so missing observations is a graceful degradation.
+  fallback: () => ({
+    headline: 'Your week in plants',
+    narrative: "Couldn't pull together a review right now. Try again in a moment.",
+    per_plant: [],
     confidence: 0,
   }),
 });
