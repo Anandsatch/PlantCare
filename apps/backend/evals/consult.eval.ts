@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { consultRouter } from '../src/llm/router';
 import { consultFixtures } from './fixtures/consult';
-import { assertConfidenceBand, mockCalls, REAL_API } from './eval-runner';
+import {
+  assertConfidenceBand,
+  expectCallArgs,
+  mockCalls,
+  REAL_API,
+} from './eval-runner';
 
+const CONSULT_PROMPT_FRAGMENT = 'plant care advisor';
 const apiKey = 'test-key';
 
 describe('/api/consult eval (mock mode)', () => {
@@ -13,6 +19,12 @@ describe('/api/consult eval (mock mode)', () => {
 
       const input = { kind: 'text' as const, userMessage: fx.user_note };
       const result = await consultRouter(input, { apiKey, callFree, callPaid });
+
+      expectCallArgs(callFree, 0, {
+        kind: 'text',
+        systemPromptIncludes: CONSULT_PROMPT_FRAGMENT,
+        userMessageIncludes: fx.user_note.slice(0, 20),
+      });
 
       if (fx.expected.kind === 'rejected_off_topic') {
         // Rejection rides the parser's `final` arm — router returns

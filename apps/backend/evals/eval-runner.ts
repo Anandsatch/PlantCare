@@ -52,6 +52,49 @@ export function mockCalls(...outcomes: MockOutcome[]): ReturnType<
   });
 }
 
+// Assert the OpenRouter call received the expected wire shape. Catches
+// regressions in router.toCallArgs (wrong kind, missing imageDataUrl,
+// missing apiKey, wrong systemPrompt) that the canned-response mocks
+// would otherwise paper over. Pass either expected.kind='vision' or
+// expected.kind='text' depending on the endpoint under test.
+export function expectCallArgs(
+  spy: ReturnType<typeof vi.fn<typeof callFreeFn>>,
+  invocation: number,
+  expected:
+    | { kind: 'vision'; systemPromptIncludes: string }
+    | { kind: 'text'; systemPromptIncludes: string; userMessageIncludes?: string },
+): void {
+  const call = spy.mock.calls[invocation];
+  if (!call) throw new Error(`expected call #${invocation} on mock, got ${spy.mock.calls.length} calls`);
+  const args = call[0];
+  if (args.kind !== expected.kind) {
+    throw new Error(`expected call args.kind=${expected.kind}, got ${args.kind}`);
+  }
+  if (typeof args.apiKey !== 'string' || !args.apiKey) {
+    throw new Error('expected call args.apiKey to be a non-empty string');
+  }
+  if (!args.systemPrompt.includes(expected.systemPromptIncludes)) {
+    throw new Error(
+      `expected systemPrompt to include "${expected.systemPromptIncludes}"; got "${args.systemPrompt.slice(0, 80)}..."`,
+    );
+  }
+  if (expected.kind === 'vision' && args.kind === 'vision') {
+    if (typeof args.imageDataUrl !== 'string' || !args.imageDataUrl.startsWith('data:image/')) {
+      throw new Error(`expected imageDataUrl to be a data: URL, got "${String(args.imageDataUrl).slice(0, 40)}..."`);
+    }
+  }
+  if (expected.kind === 'text' && args.kind === 'text') {
+    if (typeof args.userMessage !== 'string' || !args.userMessage) {
+      throw new Error('expected userMessage to be a non-empty string');
+    }
+    if (expected.userMessageIncludes && !args.userMessage.includes(expected.userMessageIncludes)) {
+      throw new Error(
+        `expected userMessage to include "${expected.userMessageIncludes}"; got "${args.userMessage.slice(0, 80)}..."`,
+      );
+    }
+  }
+}
+
 function toCallResult(o: MockOutcome): CallResult {
   if (o.kind === 'ok') return { ok: true, content: o.content, latency_ms: 50 };
   return { ok: false, reason: o.reason, latency_ms: 10 };

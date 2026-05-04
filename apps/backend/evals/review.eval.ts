@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { reviewRouter } from '../src/llm/router';
 import { reviewFixtures } from './fixtures/review';
-import { assertConfidenceBand, mockCalls, REAL_API } from './eval-runner';
+import {
+  assertConfidenceBand,
+  expectCallArgs,
+  mockCalls,
+  REAL_API,
+} from './eval-runner';
 
+const REVIEW_PROMPT_FRAGMENT = 'weekly garden letter';
 const apiKey = 'test-key';
 
 describe('/api/review eval (mock mode)', () => {
@@ -17,6 +23,11 @@ describe('/api/review eval (mock mode)', () => {
       // parser → router → output shape, not the prompt assembly.
       const input = { kind: 'text' as const, userMessage: 'eval-only-placeholder' };
       const result = await reviewRouter(input, { apiKey, callFree, callPaid });
+
+      expectCallArgs(callFree, 0, {
+        kind: 'text',
+        systemPromptIncludes: REVIEW_PROMPT_FRAGMENT,
+      });
 
       expect(result.source).toBe('free');
       assertConfidenceBand(fx.name, result.confidence, fx.expected.confidence_baseline);

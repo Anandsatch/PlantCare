@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { diagnoseRouter } from '../src/llm/router';
 import { diagnoseFixtures } from './fixtures/diagnose';
-import { assertConfidenceBand, mockCalls, REAL_API } from './eval-runner';
+import {
+  assertConfidenceBand,
+  expectCallArgs,
+  mockCalls,
+  REAL_API,
+} from './eval-runner';
+
+const DIAGNOSE_PROMPT_FRAGMENT = 'plant health diagnostician';
 
 const baseInput = { kind: 'vision' as const, imageDataUrl: 'data:image/png;base64,deadbeef' };
 const apiKey = 'test-key';
@@ -14,12 +21,21 @@ describe('/api/diagnose eval (mock mode)', () => {
 
       const result = await diagnoseRouter(baseInput, { apiKey, callFree, callPaid });
 
+      expectCallArgs(callFree, 0, {
+        kind: 'vision',
+        systemPromptIncludes: DIAGNOSE_PROMPT_FRAGMENT,
+      });
+
       if (fx.expected.is_reject) {
         // Cat reject: free returns 'unknown' with low confidence; router
         // attempts escalation (paid mock fails), result is the low-conf
-        // free fallback.
+        // free fallback. fix_steps MUST be empty on reject — a parser
+        // bug returning instructions for an unidentified plant is a
+        // P1-class user-visible regression.
         expect(result.disease_slug).toBe('unknown');
         expect(result.confidence).toBeLessThan(30);
+        expect(result.fix_steps).toHaveLength(0);
+        expect(result.alternatives).toHaveLength(0);
         expect(callFree).toHaveBeenCalledOnce();
         expect(callPaid).toHaveBeenCalledOnce();
         return;
@@ -42,6 +58,24 @@ describe('/api/diagnose eval (mock mode)', () => {
       expect(callPaid).not.toHaveBeenCalled();
     });
   }
+
+  it('paid escalation success path', async () => {
+    const callFree = mockCalls({ kind: 'ok', content: 'not parseable as JSON' });
+    const callPaid = mockCalls({ kind: 'ok', content: diagnoseFixtures[0].mock_response });
+
+    const result = await diagnoseRouter(baseInput, { apiKey, callFree, callPaid });
+
+    expect(callFree).toHaveBeenCalledOnce();
+    expect(callPaid).toHaveBeenCalledOnce();
+    expect(result.source).toBe('paid_escalated');
+    expect(result.disease_slug).toBe('spider_mites');
+    expect(result.severity).toBe('medium');
+    expect(result.fix_steps.length).toBeGreaterThanOrEqual(2);
+    expectCallArgs(callPaid, 0, {
+      kind: 'vision',
+      systemPromptIncludes: DIAGNOSE_PROMPT_FRAGMENT,
+    });
+  });
 
   it('parsed shape snapshot across all fixtures', async () => {
     const parsed = [];
