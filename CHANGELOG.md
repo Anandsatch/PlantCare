@@ -2,6 +2,29 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.5.0] - 2026-05-04
+
+E1-005 — LLM eval harness. With all four endpoints (identify, diagnose, consult, review) sharing the tiered router, this PR adds the regression suite that catches contract drift on the parser + router state machine without burning OpenRouter quota on every push. Two-mode design: the default mock mode drives canned LLM JSON through the real router and asserts the parsed shape; a future EVAL_REAL_API=1 mode (scaffolded as `.todo`) will hit live OpenRouter and use the same fixtures as the ±10 confidence band baseline. The mock-mode bug-catchers are the snapshot files plus a per-endpoint `expectCallArgs` that validates the OpenRouter wire shape (kind, imageDataUrl/userMessage, system-prompt fragment, apiKey).
+
+### Added
+- `apps/backend/evals/` directory with 26 fixtures: identify (10 — 6 healthy + 2 partial + 1 low-light + 1 cat reject), diagnose (10 — 7 sick + 2 healthy + 1 cat reject), consult (5 — 4 plant-related + 1 off-topic reject), review (1 mixed-week with 6 plants). Each fixture pairs canonical LLM JSON with a baseline confidence used by the ±10 band assertion in real-API mode.
+- `evals/eval-runner.ts` with `mockCalls(...outcomes)` (plays canned outcomes through `vi.fn<typeof callFree>()`), `assertConfidenceBand(name, actual, baseline)` (named drift errors that survive CI-log diffs), and `expectCallArgs(spy, i, expected)` — the silent-pass guard from the adversarial review. Argument-shape assertions catch regressions in `router.toCallArgs` (wrong `kind`, missing `imageDataUrl`, wrong system prompt, missing `apiKey`) that canned-response mocks would otherwise paper over.
+- `apps/backend/vitest.eval.config.ts` — separate Node-pool config so evals run in 400ms without spinning up workerd. Default `vitest.config.ts` now scopes its workers-pool include to `test/**/*.test.ts` so the two suites stay separate.
+- `bun run eval` and `bun run eval:watch` scripts on `@plantcare/backend`.
+- Per-endpoint paid-escalation success tests for identify and diagnose (E1-005 adversarial review): free returns garbage, paid returns a parseable response, asserts `source='paid_escalated'` plus the parser shape contract on the paid arm. Without these, the paid-side parser could regress and every other eval would still pass.
+- Aggregate snapshot per endpoint: parsed shape across all fixtures in a single `__snapshots__/*.snap` file, `latency_ms` stripped so timing nondeterminism doesn't pollute the diff. Surfaces parser drift in one visible block.
+- Review-eval per-plant alignment assertion (`per_plant.length === request.plants.length`) — the catch from E1-004 adversarial review, now structurally enforced. The parser permits mismatched lengths; only the eval enforces the prompt-mandated 1:1 echo.
+- Review-eval narrative length contract: 100 ≤ length ≤ 400 per the test plan and system prompt.
+- Diagnose-eval reject-branch `fix_steps.length === 0` assertion (E1-005 adversarial P1): a parser bug returning instructions on an unidentified plant ('unknown' slug) would have shipped silently otherwise.
+
+### Deferred (post-V1)
+- Real-API mode (`EVAL_REAL_API=1`): scaffolded as `it.todo` placeholders for each endpoint. Image fixtures land alongside this mode in a follow-up PR. Requires real OpenRouter quota during runs.
+- Eval coverage of `buildUserMessage` for consult/review: covered today by `test/consult.test.ts` and `test/review.test.ts` via the full Hono route handler with fetchMock. Eval scope is parser + router state machine, not request-body composition.
+- Vitest eval-pool isolation: low practical risk at the current fixture count; revisit if the suite grows past 50 fixtures.
+
+### Notes
+- The off-topic consult fixture wording — "What's the best dog food for a labrador?" — was invented per the autonomous-build prompt's leeway. The original test plan example was "a question about my dog"; flag for review if a different shape better matches your dogfooding mix.
+
 ## [0.1.4.0] - 2026-05-04
 
 E1-004 — last of four LLM proxy endpoints. The backend can now generate a weekly garden letter: mobile POSTs the past 7 days of plant counts (per-plant watering + skips + diagnoses), backend asks the free model first, escalates to paid on parse failure or low confidence, and returns the editorial Fraunces headline + one-paragraph narrative + per-plant observations that A-6 needs. Not yet wired to mobile (E9 will consume it). All four E1 endpoints — identify, diagnose, consult, review — now share the same tiered router; E1-005 (eval harness) is next.
