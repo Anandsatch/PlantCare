@@ -2,6 +2,26 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.4.0] - 2026-05-04
+
+E1-004 — last of four LLM proxy endpoints. The backend can now generate a weekly garden letter: mobile POSTs the past 7 days of plant counts (per-plant watering + skips + diagnoses), backend asks the free model first, escalates to paid on parse failure or low confidence, and returns the editorial Fraunces headline + one-paragraph narrative + per-plant observations that A-6 needs. Not yet wired to mobile (E9 will consume it). All four E1 endpoints — identify, diagnose, consult, review — now share the same tiered router; E1-005 (eval harness) is next.
+
+### Added
+- `POST /api/review` on the Cloudflare Worker. Accepts JSON body `{week_summary: {plants_total, watering_events, skip_events, diagnoses}, plants: [{species_slug, nickname?, watering_count, skip_count, had_diagnosis}]}` plus `X-Device-Id` header. plants array capped at 50, per-plant counts capped at 30, week totals capped at 300 — bounded so a hostile body can't blow up the prompt token count. Returns `ApiResult<ReviewResponse>`.
+- `ReviewResponse` shape: `{headline, narrative, per_plant: [{species_slug, observation}], confidence, source, latency_ms}`. Headline ≤ 80 chars, narrative ≤ 400 chars (per the test plan's 100-400 range), each observation ≤ 200 chars. The mobile A-6 weekly review screen renders the headline + narrative as the editorial voice and pairs each observation with the local 7-day ledger for that plant.
+- `SYSTEM_PROMPT_REVIEW` requiring `headline + narrative + per_plant + confidence`. Voice is editorial: "names the week's character, not its numbers"; narrative addresses the reader as 'you'; per_plant entries use the plant's nickname when present and interpret the data rather than echoing it. Empty plants array still returns a valid response with a "Ready when you are" nudge to add the user's first plant.
+- `parseReview` with strict `per_plant` array validation: hostile entries (null, missing species_slug, missing observation, whitespace-only fields) are dropped silently; oversized observations truncated; missing or non-array `per_plant` triggers escalation rather than passing through.
+- `routes/_reviewRequest.ts` JSON-body validator: `isBoundedInt` rejects fractional counts (would shift the LLM prompt), negative numbers, and over-cap values; nickname trimmed and length-capped; species_slug required and trimmed.
+- 21 backend tests covering router boundaries (escalation on parse fail, escalation on low confidence, paid recommendation, free_failed degraded fallback), parser hostile-input cases (oversized inputs truncated to spec caps, mixed-quality per_plant entries dropped, missing per_plant triggers escalation), and HTTP-level JSON validation (missing/fractional/negative counts, oversized plants array, invalid plant entries). Total backend tests: 148.
+
+### Changed
+- `apps/backend/src/index.ts` registers `/api/review` alongside identify, diagnose, and consult. All four endpoints now share the `createLlmRouter<T>` factory and the same `IdentifySource` discriminator (`'free' | 'paid_escalated' | 'free_failed'`).
+- `routes/_consultRequest.ts` comment updated: `_validation/` subdirectory deferred. Three flat `_*.ts` helpers (`_imageUpload`, `_consultRequest`, `_reviewRequest`) is still easier to find than three under a subdirectory; the regroup waits until a fourth helper or a real navigation pain point shows up.
+
+### Deferred (post-V1)
+- Per-plant observation eval — E1-005 will assert observation length and species_slug echoing against a fixture week. Not wired in this PR.
+- `ReviewResponse.per_plant` ordering: parser preserves model-emitted order. Mobile A-6 will pair observations to plants by `species_slug` lookup rather than relying on positional order, so a model that reorders entries doesn't misattribute observations.
+
 ## [0.1.3.0] - 2026-05-04
 
 E1-003 — third of four LLM proxy endpoints. The backend can now answer a free-text question about a specific plant: mobile POSTs a note (e.g. "I just repotted it") plus optional plant context, backend asks the free model first, escalates to paid on parse failure or low confidence. First text-only endpoint, and the first one with a structural off-topic rejection path so a hostile or irrelevant note ("recommend bleach", "tell me a joke") gets refused without burning a paid call. Not yet wired to mobile (E8 will consume it).

@@ -1,6 +1,6 @@
 // Shared types between mobile and backend.
-// Endpoint shapes: E1-001 added identify; E1-002 added diagnose; E1-003 adds
-// consult. Review lands in E1-004.
+// Endpoint shapes: E1-001 added identify; E1-002 added diagnose; E1-003 added
+// consult; E1-004 adds review.
 
 // Note on `ok` semantics: `ok: true` means "the request was accepted and the
 // caller does NOT need to retry." `queued` is `ok: true` because the work was
@@ -115,4 +115,58 @@ export type ConsultRequestBody = {
     override_interval_days?: number | null;
     watering_history?: { day_offset: number; watered: boolean }[]; // ≤ 7 entries
   };
+};
+
+// ─── /api/review (E1-004) ────────────────────────────────────────────────
+// Text-only endpoint. Mobile computes a 7-day summary locally from SQLite
+// (plant counts, watering events, skip events, diagnoses) and posts it; the
+// server returns the editorial voice for the A-6 weekly review screen — a
+// short Fraunces headline plus a one-paragraph narrative. Per-plant ledgers
+// in A-6 render from local data; the server does NOT echo plant rows back.
+//
+// Why no off-topic rejection arm (unlike consult): the user can't inject
+// text into review. It fires from an in-app button on data the app owns,
+// so the parser is asOk-shaped and parses the same response shape always.
+export type ReviewSource = IdentifySource;
+
+// One observation line per plant the user submitted, in the same order they
+// were sent. Mobile renders these alongside each plant's local ledger in A-6.
+// Empty array is valid (zero plants in the request → zero observations).
+export type ReviewPlantObservation = {
+  species_slug: string;
+  observation: string; // ≤ 200 chars after trim
+};
+
+export type ReviewResponse = {
+  headline: string; // ≤ 80 chars after trim
+  narrative: string; // ≤ 400 chars after trim — test plan spec is 100-400
+  per_plant: ReviewPlantObservation[]; // 0..50, paired with request.plants
+  confidence: number; // 0-100
+  source: ReviewSource;
+  latency_ms: number;
+};
+
+// Per-plant row in the request. nickname optional (a freshly-added plant
+// may not have one yet); counts are non-negative integers, ≤ 30.
+export type ReviewPlantSummary = {
+  species_slug: string;
+  nickname?: string;
+  watering_count: number; // 0..30
+  skip_count: number; // 0..30
+  had_diagnosis: boolean;
+};
+
+// Mobile request body for POST /api/review. plants is capped at 50 entries
+// — V1 doesn't have multi-garden users; 50 is a generous ceiling that bounds
+// the prompt length. Counts in week_summary are 0..300 to allow several
+// plants to contribute, still bounded so a hostile body can't blow up the
+// prompt token count.
+export type ReviewRequestBody = {
+  week_summary: {
+    plants_total: number; // 0..50
+    watering_events: number; // 0..300
+    skip_events: number; // 0..300
+    diagnoses: number; // 0..50
+  };
+  plants: ReviewPlantSummary[]; // 0..50
 };

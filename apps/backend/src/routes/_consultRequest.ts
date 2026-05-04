@@ -3,10 +3,11 @@
 // note/plant_context shape validation so the route handler stays a thin
 // orchestrator.
 //
-// Why not a /_validation/ subdirectory yet: only two helpers exist
-// (_imageUpload, _consultRequest). E1-004 (review) will add a third — at
-// that point regroup. Premature directory-making is the kind of structural
-// churn the V1 scope locks exist to prevent.
+// Why not a /_validation/ subdirectory yet: three helpers in routes/ now
+// (_imageUpload, _consultRequest, _reviewRequest). Three flat files is
+// still easier to find than three under a subdirectory; the regroup is
+// deferred until a fourth helper lands or a real pain point shows up.
+// V1 scope locks penalize structural churn without a concrete trigger.
 
 import type { Context } from 'hono';
 import type { ApiResult, ConsultRequestBody } from '@plantcare/api-types';
