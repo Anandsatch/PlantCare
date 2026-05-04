@@ -4,6 +4,8 @@ import {
   parseIdentify,
   diagnoseRouter,
   parseDiagnose,
+  consultRouter,
+  parseConsult,
 } from '../src/llm/router';
 import type { callFree as callFreeFn, CallResult } from '../src/llm/openrouter';
 
@@ -47,7 +49,7 @@ function makeCall(impl: CallFn): ReturnType<typeof vi.fn<CallFn>> {
   return vi.fn<CallFn>(impl);
 }
 
-const baseInput = { imageDataUrl: 'data:image/jpeg;base64,xxxx' };
+const baseInput = { kind: 'vision' as const, imageDataUrl: 'data:image/jpeg;base64,xxxx' };
 const baseDeps = { apiKey: 'test-key' };
 
 describe('identifyRouter', () => {
@@ -587,5 +589,393 @@ describe('parseDiagnose', () => {
       expect(parseDiagnose(JSON.stringify({ ...base, severity: 7 }))?.severity).toBe('medium');
       expect(parseDiagnose(JSON.stringify({ ...base, severity: null }))?.severity).toBe('medium');
     });
+  });
+});
+
+// ─── Consult ─────────────────────────────────────────────────────────────
+
+const HIGH_CONF_CONSULT_FREE = JSON.stringify({
+  rejected: false,
+  revised_interval_days: 5,
+  reasoning: 'Repotting stress lowers water needs; back off to every 5 days.',
+  confidence: 82,
+});
+
+const LOW_CONF_CONSULT_FREE = JSON.stringify({
+  rejected: false,
+  revised_interval_days: 7,
+  reasoning: 'Hard to tell without seeing the plant.',
+  confidence: 40,
+});
+
+const HIGH_CONF_CONSULT_PAID = JSON.stringify({
+  rejected: false,
+  revised_interval_days: 4,
+  reasoning: 'Paid model: post-repot soil retains moisture longer than usual.',
+  confidence: 90,
+});
+
+const REJECTED_FREE = JSON.stringify({
+  rejected: true,
+  reason: 'not_plant_related',
+});
+
+const consultTextInput = {
+  kind: 'text' as const,
+  userMessage: 'Plant: species=monstera_deliciosa\nNote: I just repotted it.',
+};
+
+describe('consultRouter', () => {
+  it('returns recommendation when free model parses cleanly with confidence >= 70', async () => {
+    const callFree = vi.fn(async () => ok(HIGH_CONF_CONSULT_FREE));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(callPaid).not.toHaveBeenCalled();
+    expect(res.kind).toBe('recommendation');
+    if (res.kind === 'recommendation') {
+      expect(res.revised_interval_days).toBe(5);
+      expect(res.confidence).toBe(82);
+      expect(res.source).toBe('free');
+    }
+  });
+
+  it('escalates to paid on confidence < 70 and returns paid recommendation', async () => {
+    const callFree = vi.fn(async () => ok(LOW_CONF_CONSULT_FREE));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(callPaid).toHaveBeenCalledOnce();
+    expect(res.source).toBe('paid_escalated');
+    if (res.kind === 'recommendation') {
+      expect(res.revised_interval_days).toBe(4);
+      expect(res.confidence).toBe(90);
+    }
+  });
+
+  it('returns rejection IMMEDIATELY without escalation (off-topic is terminal)', async () => {
+    // Critical guard: rejection is a confident structural answer, not a
+    // confidence-< 70 problem. Escalating to paid burns budget for the same
+    // result and hands a hostile note an extra retry against a stronger model.
+    const callFree = vi.fn(async () => ok(REJECTED_FREE));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(callFree).toHaveBeenCalledOnce();
+    expect(callPaid).not.toHaveBeenCalled();
+    expect(res.kind).toBe('rejected_off_topic');
+    expect(res.source).toBe('free');
+    if (res.kind === 'rejected_off_topic') {
+      expect(res.reason).toBe('not_plant_related');
+    }
+  });
+
+  it('rejection path also skips the budget gate (tryConsumeEscalation NOT called)', async () => {
+    // Stronger guard than the test above: even checking the budget gate on
+    // rejection is wrong, because the answer is final regardless of the gate.
+    // This catches a refactor that wires rejection through tryEscalate "just
+    // to be safe" — which would also leak a request count to a future
+    // budget-meter regression.
+    const callFree = vi.fn(async () => ok(REJECTED_FREE));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+    const tryConsumeEscalation = vi.fn(async () => true);
+
+    const res = await consultRouter(consultTextInput, {
+      ...baseDeps,
+      callFree,
+      callPaid,
+      tryConsumeEscalation,
+    });
+
+    expect(tryConsumeEscalation).not.toHaveBeenCalled();
+    expect(callPaid).not.toHaveBeenCalled();
+    expect(res.kind).toBe('rejected_off_topic');
+  });
+
+  it('escalates on JSON parse failure and returns paid recommendation', async () => {
+    const callFree = vi.fn(async () => ok('I cannot help with that.'));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(callPaid).toHaveBeenCalledOnce();
+    expect(res.source).toBe('paid_escalated');
+    expect(res.kind).toBe('recommendation');
+  });
+
+  it('escalates on missing rejected discriminator', async () => {
+    // A model that returns recommendation-shaped JSON without the explicit
+    // `rejected: false` field is violating the contract — escalate.
+    const noDiscriminator = JSON.stringify({
+      revised_interval_days: 5,
+      reasoning: 'fine',
+      confidence: 80,
+    });
+    const callFree = vi.fn(async () => ok(noDiscriminator));
+    const callPaid = vi.fn(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(callPaid).toHaveBeenCalledOnce();
+    expect(res.source).toBe('paid_escalated');
+  });
+
+  it('returns degraded recommendation fallback when free + paid both error', async () => {
+    const callFree = vi.fn(async () => err('http_error'));
+    const callPaid = vi.fn(async () => err('http_error'));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(res.source).toBe('free_failed');
+    expect(res.kind).toBe('recommendation');
+    if (res.kind === 'recommendation') {
+      expect(res.confidence).toBe(0);
+      expect(res.revised_interval_days).toBe(7);
+      expect(res.reasoning).toMatch(/try again/i);
+    }
+  });
+
+  it('uses SYSTEM_PROMPT_CONSULT (not identify or diagnose) for both free and paid', async () => {
+    const callFree = makeCall(async () => ok('garbage'));
+    const callPaid = makeCall(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    const freeArg = callFree.mock.calls[0]![0]!;
+    const paidArg = callPaid.mock.calls[0]![0]!;
+    expect(freeArg.systemPrompt).toBe(paidArg.systemPrompt);
+    expect(freeArg.systemPrompt).toMatch(/plant care advisor/);
+    expect(freeArg.systemPrompt).toMatch(/rejected/);
+    expect(freeArg.systemPrompt).not.toMatch(/plant identification expert/);
+    expect(freeArg.systemPrompt).not.toMatch(/plant health diagnostician/);
+  });
+
+  it('threads text-arm input through to the call', async () => {
+    const callFree = makeCall(async () => ok(HIGH_CONF_CONSULT_FREE));
+    const callPaid = makeCall(async () => ok(HIGH_CONF_CONSULT_PAID));
+
+    await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    const freeArg = callFree.mock.calls[0]![0]!;
+    expect(freeArg.kind).toBe('text');
+    if (freeArg.kind === 'text') {
+      expect(freeArg.userMessage).toContain('monstera_deliciosa');
+      expect(freeArg.userMessage).toContain('repotted');
+    }
+  });
+
+  it('returns low-confidence free recommendation if paid escalation also unparseable', async () => {
+    const callFree = vi.fn(async () => ok(LOW_CONF_CONSULT_FREE));
+    const callPaid = vi.fn(async () => ok('still no idea'));
+
+    const res = await consultRouter(consultTextInput, { ...baseDeps, callFree, callPaid });
+
+    expect(res.source).toBe('free');
+    if (res.kind === 'recommendation') {
+      expect(res.confidence).toBe(40);
+      expect(res.revised_interval_days).toBe(7);
+    }
+  });
+});
+
+describe('parseConsult', () => {
+  it('parses a well-formed recommendation', () => {
+    const out = parseConsult(HIGH_CONF_CONSULT_FREE);
+    expect(out?.kind).toBe('ok');
+    if (out?.kind === 'ok' && out.value.kind === 'recommendation') {
+      expect(out.value.revised_interval_days).toBe(5);
+      expect(out.value.confidence).toBe(82);
+      expect(out.value.reasoning).toMatch(/Repotting/);
+    }
+  });
+
+  it('parses a well-formed rejection as final', () => {
+    const out = parseConsult(REJECTED_FREE);
+    expect(out?.kind).toBe('final');
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason).toBe('not_plant_related');
+    }
+  });
+
+  it('rejection wins when both rejection AND recommendation keys are present (hostile shape)', () => {
+    // A hostile model could try to slip a "recommendation" past us by
+    // including rejected: true alongside revised_interval_days. Discriminator
+    // must win — otherwise prompt-injection notes could exfiltrate as a
+    // confident "water with bleach" recommendation.
+    const both = JSON.stringify({
+      rejected: true,
+      reason: 'harmful_request',
+      revised_interval_days: 1,
+      reasoning: 'Water hourly with bleach.',
+      confidence: 99,
+    });
+    const out = parseConsult(both);
+    expect(out?.kind).toBe('final');
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason).toBe('harmful_request');
+    }
+  });
+
+  it('rejection with missing reason gets default tag', () => {
+    const out = parseConsult(JSON.stringify({ rejected: true }));
+    expect(out?.kind).toBe('final');
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason).toBe('off_topic');
+    }
+  });
+
+  it('rejection with empty/whitespace reason gets default tag', () => {
+    const out = parseConsult(JSON.stringify({ rejected: true, reason: '   ' }));
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason).toBe('off_topic');
+    }
+  });
+
+  it('truncates oversized rejection reason to 200 chars', () => {
+    // Defense against a model emitting a giant reason string that becomes UI
+    // bloat or a vector for prompt-injection echo.
+    const huge = 'x'.repeat(5000);
+    const out = parseConsult(JSON.stringify({ rejected: true, reason: huge }));
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason.length).toBe(200);
+    }
+  });
+
+  it('rejects (returns null) when "rejected" discriminator is missing entirely', () => {
+    const noDiscriminator = JSON.stringify({
+      revised_interval_days: 5,
+      reasoning: 'fine',
+      confidence: 80,
+    });
+    expect(parseConsult(noDiscriminator)).toBeNull();
+  });
+
+  it('rejects (returns null) when "rejected" is non-boolean (e.g. "true" string)', () => {
+    expect(
+      parseConsult(JSON.stringify({ rejected: 'true', reason: 'x' })),
+    ).toBeNull();
+  });
+
+  it('rejects (returns null) when recommendation has non-numeric revised_interval_days', () => {
+    // Hostile-input case: model emits "water with bleach" as the days value.
+    expect(
+      parseConsult(
+        JSON.stringify({
+          rejected: false,
+          revised_interval_days: 'water with bleach',
+          reasoning: 'fine',
+          confidence: 80,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects (returns null) when recommendation has empty reasoning', () => {
+    expect(
+      parseConsult(
+        JSON.stringify({
+          rejected: false,
+          revised_interval_days: 5,
+          reasoning: '   ',
+          confidence: 80,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects (returns null) when recommendation confidence is non-numeric', () => {
+    expect(
+      parseConsult(
+        JSON.stringify({
+          rejected: false,
+          revised_interval_days: 5,
+          reasoning: 'ok',
+          confidence: 'high',
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('clamps revised_interval_days to [1, 30]', () => {
+    const tooLow = parseConsult(
+      JSON.stringify({ rejected: false, revised_interval_days: -3, reasoning: 'r', confidence: 80 }),
+    );
+    if (tooLow?.kind === 'ok' && tooLow.value.kind === 'recommendation') {
+      expect(tooLow.value.revised_interval_days).toBe(1);
+    }
+
+    const tooHigh = parseConsult(
+      JSON.stringify({ rejected: false, revised_interval_days: 9999, reasoning: 'r', confidence: 80 }),
+    );
+    if (tooHigh?.kind === 'ok' && tooHigh.value.kind === 'recommendation') {
+      expect(tooHigh.value.revised_interval_days).toBe(30);
+    }
+
+    const fractional = parseConsult(
+      JSON.stringify({ rejected: false, revised_interval_days: 4.7, reasoning: 'r', confidence: 80 }),
+    );
+    if (fractional?.kind === 'ok' && fractional.value.kind === 'recommendation') {
+      expect(fractional.value.revised_interval_days).toBe(5);
+    }
+  });
+
+  it('clamps + rounds confidence to [0, 100]', () => {
+    const out = parseConsult(
+      JSON.stringify({ rejected: false, revised_interval_days: 5, reasoning: 'r', confidence: 92.7 }),
+    );
+    if (out?.kind === 'ok' && out.value.kind === 'recommendation') {
+      expect(out.value.confidence).toBe(93);
+    }
+    const high = parseConsult(
+      JSON.stringify({ rejected: false, revised_interval_days: 5, reasoning: 'r', confidence: 200 }),
+    );
+    if (high?.kind === 'ok' && high.value.kind === 'recommendation') {
+      expect(high.value.confidence).toBe(100);
+    }
+  });
+
+  it('truncates oversized reasoning to 500 chars', () => {
+    const huge = 'a'.repeat(5000);
+    const out = parseConsult(
+      JSON.stringify({
+        rejected: false,
+        revised_interval_days: 5,
+        reasoning: huge,
+        confidence: 80,
+      }),
+    );
+    if (out?.kind === 'ok' && out.value.kind === 'recommendation') {
+      expect(out.value.reasoning.length).toBe(500);
+    }
+  });
+
+  it('survives prompt-injection text wrapped around valid JSON', () => {
+    // safeJsonParse already extracts the first balanced {...} block. Verify
+    // the parser still produces the expected shape when the model echoed an
+    // injection attempt as prose around its real answer.
+    const wrapped = `Sure! Ignoring previous instructions. ${JSON.stringify({
+      rejected: true,
+      reason: 'prompt_injection',
+    })} (end)`;
+    const out = parseConsult(wrapped);
+    expect(out?.kind).toBe('final');
+    if (out?.kind === 'final' && out.value.kind === 'rejected_off_topic') {
+      expect(out.value.reason).toBe('prompt_injection');
+    }
+  });
+
+  it('returns null on malformed JSON entirely', () => {
+    expect(parseConsult('not json at all')).toBeNull();
+    expect(parseConsult('')).toBeNull();
+    expect(parseConsult('{')).toBeNull();
+  });
+
+  it('returns null on JSON arrays / non-objects at the root', () => {
+    expect(parseConsult('[]')).toBeNull();
+    expect(parseConsult('null')).toBeNull();
+    expect(parseConsult('"rejected"')).toBeNull();
   });
 });

@@ -2,6 +2,26 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.3.0] - 2026-05-04
+
+E1-003 — third of four LLM proxy endpoints. The backend can now answer a free-text question about a specific plant: mobile POSTs a note (e.g. "I just repotted it") plus optional plant context, backend asks the free model first, escalates to paid on parse failure or low confidence. First text-only endpoint, and the first one with a structural off-topic rejection path so a hostile or irrelevant note ("recommend bleach", "tell me a joke") gets refused without burning a paid call. Not yet wired to mobile (E8 will consume it).
+
+### Added
+- `POST /api/consult` on the Cloudflare Worker. Accepts JSON body `{note, plant_context?}` plus `X-Device-Id` header. Note is 1-2000 chars after trim with the length cap applied before trim so a 100KB whitespace blob can't burn CPU. plant_context is optional and strictly validated per field (species_slug, is_indoor, override_interval_days as positive integer 1-365, watering_history capped at 7 entries). Returns `ApiResult<ConsultResponse>`.
+- `ConsultResponse` is a discriminated union: `{kind: 'recommendation', revised_interval_days, reasoning, confidence, source, latency_ms}` for plant-care answers, or `{kind: 'rejected_off_topic', reason, source, latency_ms}` for off-topic notes. The route handler maps `rejected_off_topic` to `ApiResult.rejected_off_topic` at the wire boundary, so mobile callers get the same `ok: false, kind: 'rejected_off_topic'` shape they already handle.
+- `SYSTEM_PROMPT_CONSULT` requiring the model to return JSON in one of two shapes, each tagged with an explicit `rejected: <bool>` discriminator. Rejection triggers are enumerated in the prompt: not plant-related, instruction-override attempts, harmful actions (bleach, gasoline, salting soil), and ambiguous notes.
+- `parseConsult` with the rejection discriminator winning over recommendation keys — a hostile model that emits `{rejected: true, revised_interval_days: 1, reasoning: "water with bleach"}` still routes to rejection. Parser-level defenses cover NaN/Infinity confidence, fractional `revised_interval_days` clamping to [1, 30], reasoning truncation at 500 chars, rejection-reason truncation at 200 chars.
+- 49 backend tests across consult router boundaries (rejection bypasses both confidence gate and budget gate, paid-side rejection collapses correctly, abort signal threading, system prompt isolation), parser hostile-input cases (prompt injection wrapped around valid JSON, missing/non-boolean discriminator, oversized inputs), and HTTP-level JSON validation (note bounds, plant_context shape, fractional override rejection). Total backend tests: 127.
+
+### Changed
+- `RouterInput` widened to a discriminated union: `{kind: 'vision', imageDataUrl}` for identify/diagnose, `{kind: 'text', userMessage}` for consult and the future review endpoint. `CallArgs` in `openrouter.ts` mirrors the shape; `callOpenRouter` switches on `kind` to build either the OpenRouter image_url content array or a plain string. Identify and diagnose call sites updated; their existing 78 tests stay green.
+- `createLlmRouter` parser contract widened from `T | null` to `ParseResult<T> | null` where `ParseResult<T> = {kind: 'ok', value} | {kind: 'final', value}`. `null` still escalates (parse fail), `ok` is confidence-gated as before, `final` is terminal — bypasses both the confidence gate and the paid-escalation budget gate. Identify and diagnose parsers wrapped via an `asOk()` adapter so their `T | null` test surface is unchanged. The `WithConfidence` generic constraint dropped in favor of a defensive runtime `readConfidence(value)` that returns 0 (escalates) on a malformed `ok` parse rather than silently passing it through.
+- `routes/_consultRequest.ts` is the JSON-body counterpart to `routes/_imageUpload.ts` — same `{ok, request | response}` return shape, same defense-in-depth ordering (device-id check before body read, length cap before trim, strict per-field validation). Two helpers in `routes/` is fine; an `_validation/` subdirectory waits until E1-004 makes it three.
+
+### Deferred (post-V1)
+- Anti-injection delimiter framing around the user note in the system prompt (e.g. `<user_note>...</user_note>` wrapping). Parser provides the structural backstop today; harden the prompt itself when E1-005 eval fixtures show measurable injection success.
+- `ConsultRejection`'s in-process `source` and `latency_ms` fields drop on the wire (the `ApiResult.rejected_off_topic` variant doesn't carry them). Revisit when E8 mobile surfaces a need for either field on rejections.
+
 ## [0.1.2.0] - 2026-05-03
 
 E1-002 — second of four LLM proxy endpoints. The backend can now diagnose a sick plant from a photo: mobile POSTs an image, backend asks a free vision model first, escalates to a paid model only when the free model can't answer confidently. Same tiered router as identify, different system prompt + response shape. Not yet wired to mobile (E5 will consume it).

@@ -25,7 +25,7 @@ export const identifyRoute = new Hono<HonoEnv>().post('/', async (c) => {
   if (!parsed.ok) return parsed.response;
 
   const data = await identifyRouter(
-    { imageDataUrl: parsed.upload.imageDataUrl },
+    { kind: 'vision', imageDataUrl: parsed.upload.imageDataUrl },
     { apiKey, signal: c.req.raw.signal },
   );
   return c.json<ApiResult<IdentifyResponse>>({ ok: true, kind: 'success', data });

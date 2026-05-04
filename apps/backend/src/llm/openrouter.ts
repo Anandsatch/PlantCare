@@ -2,8 +2,13 @@
 // free tier) and callPaid (Claude 3.5 Sonnet vision). Each wraps the same
 // chat-completions HTTP call with model + timeout differences.
 //
-// Why not stream: identify is single-shot JSON; streaming adds a parse buffer
-// for no UX win.
+// E1-003 widened the call surface to a discriminated union: vision callers
+// (identify, diagnose) pass an imageDataUrl; text callers (consult, review)
+// pass a userMessage. The wire shape switches on `kind` — vision builds a
+// content array with image_url, text passes the prompt as a plain string.
+//
+// Why not stream: every endpoint is single-shot JSON; streaming adds a parse
+// buffer for no UX win.
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -22,24 +27,29 @@ export type CallResult =
       latency_ms: number;
     };
 
-type CallArgs = {
+type CallArgsCommon = {
   apiKey: string;
   systemPrompt: string;
-  imageDataUrl: string; // data: URL or https: URL accepted by OpenRouter vision
   fetchImpl?: typeof fetch; // injection seam for tests
   signal?: AbortSignal;
 };
 
+export type CallArgs =
+  | (CallArgsCommon & { kind: 'vision'; imageDataUrl: string })
+  | (CallArgsCommon & { kind: 'text'; userMessage: string });
+
 export function callFree(args: CallArgs): Promise<CallResult> {
-  return callOpenRouter({ ...args, model: FREE_MODEL, timeoutMs: FREE_TIMEOUT_MS });
+  return callOpenRouter(args, FREE_MODEL, FREE_TIMEOUT_MS);
 }
 
 export function callPaid(args: CallArgs): Promise<CallResult> {
-  return callOpenRouter({ ...args, model: PAID_MODEL, timeoutMs: PAID_TIMEOUT_MS });
+  return callOpenRouter(args, PAID_MODEL, PAID_TIMEOUT_MS);
 }
 
 async function callOpenRouter(
-  args: CallArgs & { model: string; timeoutMs: number },
+  args: CallArgs,
+  model: string,
+  timeoutMs: number,
 ): Promise<CallResult> {
   // Caller already abandoned us — don't even open the socket.
   if (args.signal?.aborted) {
@@ -51,7 +61,7 @@ async function callOpenRouter(
   if (args.signal) {
     args.signal.addEventListener('abort', onCallerAbort, { once: true });
   }
-  const timer = setTimeout(() => controller.abort(), args.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const start = Date.now();
   try {
     const res = await fetchImpl(OPENROUTER_URL, {
@@ -61,15 +71,10 @@ async function callOpenRouter(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: args.model,
+        model,
         messages: [
           { role: 'system', content: args.systemPrompt },
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: args.imageDataUrl } },
-            ],
-          },
+          { role: 'user', content: buildUserContent(args) },
         ],
         // OpenRouter accepts response_format hint; free models often ignore it,
         // which is why we still need safeJsonParse downstream.
@@ -102,4 +107,14 @@ async function callOpenRouter(
     // signal forever.
     args.signal?.removeEventListener('abort', onCallerAbort);
   }
+}
+
+// Vision: OpenRouter expects content as an array with at least one image_url
+// part. Text: a plain string is the canonical form and is what every text
+// model expects.
+function buildUserContent(args: CallArgs): string | Array<{ type: 'image_url'; image_url: { url: string } }> {
+  if (args.kind === 'vision') {
+    return [{ type: 'image_url', image_url: { url: args.imageDataUrl } }];
+  }
+  return args.userMessage;
 }

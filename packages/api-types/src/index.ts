@@ -1,6 +1,6 @@
 // Shared types between mobile and backend.
-// Endpoint shapes: E1-001 added identify; E1-002 adds diagnose. Consult and
-// review land in E8 / E9.
+// Endpoint shapes: E1-001 added identify; E1-002 added diagnose; E1-003 adds
+// consult. Review lands in E1-004.
 
 // Note on `ok` semantics: `ok: true` means "the request was accepted and the
 // caller does NOT need to retry." `queued` is `ok: true` because the work was
@@ -71,4 +71,48 @@ export type DiagnoseResponse = {
   alternatives: DiagnoseAlternative[];
   source: DiagnoseSource;
   latency_ms: number;
+};
+
+// ─── /api/consult (E1-003) ──────────────────────────────────────────────
+// Text-only endpoint: user note + plant context → revised watering rec, OR
+// a structural off-topic rejection. Same router contract as identify/diagnose
+// (free → paid escalation, same source discriminator), but introduces a
+// second valid response shape.
+//
+// Why two arms in ConsultResponse rather than only the wire-level
+// ApiResult.rejected_off_topic: the parser sees the fork before the route
+// handler does, the router has to know not to escalate a rejection (it's a
+// confident answer, not a low-confidence one), and the eval suite (E1-005)
+// needs the structural shape to assert against. The route handler maps
+// kind:'rejected_off_topic' to ApiResult.rejected_off_topic at the boundary.
+export type ConsultSource = IdentifySource;
+
+export type ConsultRecommendation = {
+  kind: 'recommendation';
+  revised_interval_days: number; // clamped to [1, 30]
+  reasoning: string; // ≤ 500 chars after trim
+  confidence: number; // 0-100
+  source: ConsultSource;
+  latency_ms: number;
+};
+
+export type ConsultRejection = {
+  kind: 'rejected_off_topic';
+  reason: string; // ≤ 200 chars after trim
+  source: ConsultSource;
+  latency_ms: number;
+};
+
+export type ConsultResponse = ConsultRecommendation | ConsultRejection;
+
+// Mobile request body for POST /api/consult.
+// note: 1-2000 chars after trim; plant_context optional.
+export type ConsultRequestBody = {
+  note: string;
+  plant_context?: {
+    species_slug?: string;
+    is_indoor?: boolean;
+    override_interval_days?: number | null;
+    watering_history?: { day_offset: number; watered: boolean }[]; // ≤ 7 entries
+  };
 };
