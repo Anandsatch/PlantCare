@@ -10,3 +10,5 @@ export type { HandOnSoilIconProps } from './HandOnSoilIcon';
 // Primitive components barrel. Each new primitive (Droplet, LeafIcon, FAB,
 // HeroPhoto, etc.) lands here in its own ticket — do not pre-export shells.
 export { EditorialButton, type EditorialButtonProps } from './EditorialButton';
+// Primitives barrel. Future E2 tickets append here.
+export { FAB, type FABProps } from './FAB';
