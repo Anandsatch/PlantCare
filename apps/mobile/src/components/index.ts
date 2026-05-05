@@ -12,6 +12,14 @@ export type { WateringEvent, WateringLedgerProps } from './WateringLedger';
 // Components barrel. Composites that aren't primitive enough to live in
 // `./primitives` (e.g. screen-level rows like PhotoTimeline) re-export here.
 export { PhotoTimeline, formatRelativeDate, type PhotoEntry, type PhotoTimelineProps } from './PhotoTimeline';
+export {
+  PlantCard,
+  composeAccessibilityLabel,
+  composePressableStyle,
+  formatLastWatered,
+  localDayDelta,
+  type PlantCardProps,
+} from './PlantCard';
 export { PlantCareCameraView } from './CameraView';
 export type {
   CameraCaptureResult,
