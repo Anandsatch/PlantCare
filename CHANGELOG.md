@@ -2,6 +2,37 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.24.0] - 2026-05-04
+
+E5-006 — `useDiagnoseRequest` is the camera-flow hook that talks to `/api/diagnose`; it consumes the E2-005 `ApiResult<DiagnoseResponse>` discriminated union and adds an offline-degraded coercion (`network` kind → `queued`) so the UI surfaces a tan banner instead of an error card; actual persistence lives in E7. Stacks on `Anandsatch/e2-api-client` (PR #11) and will auto-rebase to main when E2-005 lands. The hook is intentionally minimal: a state machine, a monotonic call counter for race-by-call-order semantics, a mounted-ref guard for unmount safety, and an injectable `netInfo` probe whose default treats the client as online (real `@react-native-community/netinfo` is deferred to E7-003 per V1 scope locks). 12 new hook tests, 73 mobile tests total.
+
+### Added
+- `apps/mobile/src/hooks/useDiagnoseRequest.ts` — `useDiagnoseRequest({ apiClient, netInfo? })` returning `{ diagnose, status, lastResult }`. `diagnose({ photoUri, plantContext? })` returns `Promise<ApiResult<DiagnoseResponse>>`. State machine: `idle → requesting → success | error | queued`. The api client is injected (not defaulted to a singleton) to keep dependencies visible at every call site; a future `apps/mobile/src/api/singleton.ts` can add a default for screens to import without changing the hook contract. `PlantContext` (`{ species_slug?, nickname? }`) is defined locally rather than imported from db/types — db/types lives behind an unmerged PR and we don't want to couple stacks. The shape is forward-compat documentation today; the diagnose endpoint takes only an image on the wire.
+- `apps/mobile/src/hooks/__tests__/useDiagnoseRequest.test.tsx` — 12 tests covering: happy path online → success, server-kind → error, low_confidence/timeout/parse_error/layer1_reject NOT coerced to queued, offline (`netInfo === false`) short-circuits without calling apiClient.diagnose, network kind coerced to queued, status transitions idle→requesting→success, unmount mid-request doesn't trip the React-18 setState-after-unmount warning, two in-flight calls resolving in reverse wall-clock order leave lastResult on the call-order-newer one (race-by-call-order, not race-by-resolution), plantContext acceptance, default netInfo (omitted) treats as online, apiClient throwing surfaces as queued (defensive coercion path).
+- Hook barrel updated: `useDiagnoseRequest` + types (`DiagnoseInput`, `DiagnoseStatus`, `NetInfoLike`, `PlantContext`, `UseDiagnoseRequestConfig`, `UseDiagnoseRequestReturn`) re-exported from `apps/mobile/src/hooks/index.ts`.
+
+### Network → queued coercion (the load-bearing decision)
+When `apiClient.diagnose` resolves with `kind: 'network'`, the hook coerces that to `{ ok: false, kind: 'queued' }`. Codex adversarial review flagged this as a P2: `queued` semantically promises "we'll run it later," and the hook today has no actual persistence — `network` can also fire for DNS / TLS / captive-portal failures that aren't true offline, where coercing to `queued` is a small UX lie. The decision is to take the lie for V1 because: (a) the user-visible difference between "we couldn't reach the lab" and "you're offline" is nil for a non-technical user, (b) the master plan's desired UX (line 346) is the tan banner, not an error card with a retry button, and (c) E7-004 will wire the actual sync_queue persistence into this exact branch with no contract change at the hook boundary. `timeout` is NOT coerced — that's "request reached the lab, we waited too long," which is a different user intent (retry now) and a different error state in the A-3 spec.
+
+### Race semantics (most-recent-by-call-order, not by-resolution)
+The hook tags each `diagnose()` call with a monotonic counter and only commits a result if its id is >= the most recent committed id. A slow first call resolving after a faster second call cannot clobber the second call's `lastResult`. This is a real bug, not theoretical: the second call is often a retry of the first, and if the first call's tardy response wins, the user sees the result they were trying to get away from. Test 9 ("two diagnose() calls in flight resolve independently") locks the contract.
+
+### Unmount safety: mountedRef vs AbortController
+Considered threading `AbortController.signal` through `apiClient.diagnose`, but the E2-005 client doesn't currently expose `signal` on per-call options. Adding it is an api-client change, not a hook change. The mountedRef approach is correct for what the hook needs (suppress setState after unmount); the in-flight fetch will complete and its result is just discarded by the same call-order guard.
+
+### Adversarial review (codex)
+- **P2 (acknowledged, not changed)** — `network → queued` coercion makes the UI promise persistence the hook doesn't yet have. Counter-argument and rationale captured inline at the coercion site and in the section above. The spec ("any 'network' kind from the client should return queued") wins over the literal-truth concern for V1.
+
+### Rejected reviewer suggestions
+- Pull forward E7 sync_queue persistence into this PR. V1 scope lock; E7-001..E7-004 own that layer. Folding persistence into the camera-flow hook would couple two stacks and bloat the diff that should live behind the dedicated `SyncDrainer` review.
+- Add `@react-native-community/netinfo` as a runtime dep here. V1 scope lock — E7-003 wires the real NetInfo subscription via the `netInfo` injection point this hook already exposes. Adding the dep now buys nothing the default ("always online + rely on api client's `network` kind for offline detection") doesn't already provide.
+- Switch state management to `react-query` / `swr` / `tanstack-query`. The diagnose flow is one-shot per camera capture, not a long-lived cache; a query library would be more abstraction than value, and would also pull a non-trivial peer-dep tree.
+- Default `apiClient` to a singleton. Hides the dependency at every call site and makes tests worse. Injection is more verbose, but the verbosity is exactly the dependency-visibility we want.
+
+### Notes
+- Test count: 73 mobile (was 61) + 148 backend = 221 across the workspace.
+- This PR is stacked on `Anandsatch/e2-api-client` (PR #11). When E2-005 merges to main, GitHub will auto-rebase the base branch.
+
 ## [0.1.23.0] - 2026-05-04
 
 E4-003 — `<WateringLedger>`, the 7-day droplet row anchoring A-2 plant detail and the per-plant block on A-6 weekly review. The component uses **local-tz day bucketing for display** while the watering engine math (E4-001) uses **UTC ms** — this is the deliberate display/logic boundary. Users see "watered Tuesday" under the TUE column on their phone regardless of how that instant maps to UTC; the engine, by contrast, computes `dueAtMs = lastMs + intervalDays * 86_400_000` so DST flips and international-date-line travel can't shift watering reminders. The empty state renders the row of seven outline droplets *plus* the italic Inter caption "No watering recorded yet — tap Mark watered to start your record" from day one — so when the first watering arrives the chart shape is already established and no relearning happens. Stacks on `Anandsatch/e2-icons` (PR #14); will auto-rebase to main when E2-006 lands. 16 new mobile tests, 61 total mobile.
