@@ -1,5 +1,5 @@
 export { useReduceMotion } from './useReduceMotion';
-export { useTheme } from './useTheme';
+export { ForcedTheme, ThemeOverrideContext, useTheme } from './useTheme';
 export { createPlantsApi, usePlants, type PlantsApi, type PlantsExecutor, type SqlBindValue } from './usePlants';
 export { useWateringEngine, type UseWateringEnginePlant } from './useWateringEngine';
 export {
