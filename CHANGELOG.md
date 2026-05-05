@@ -2,6 +2,26 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.12.0] - 2026-05-04
+
+E2-008 — `<EditorialButton>` primitive. The only button vocabulary in V1: outline (cream surface + hairline forest border + Fraunces forest label) and filled (forest fill + cream Fraunces label). Used on A-2's "Mark watered" / "Add note", A-3's "Save to garden" / "Done", A-4's "Add to garden", and the weekly review's "Got it." CTA. Built on RN's `Pressable` (the modern API; no TouchableOpacity). Tokens invert correctly between Conservatory (light) and Midnight (dark) by reading `theme.colors.surface`/`theme.colors.text` — no per-variant dark-mode branch, the token table in `DESIGN.md` is the source of truth and `darkTheme` already inverts surface/text.
+
+### Added
+- `apps/mobile/src/components/primitives/EditorialButton.tsx` — typed `EditorialButtonProps` with `variant`, `label`, `onPress`, optional `disabled`, `loading`, `accessibilityLabel`, `accessibilityHint`, `testID`. Border radius 8, padding 12v × 24h, Fraunces 600 semibold @ 16/20. `accessibilityRole='button'` always; `accessibilityState={{ disabled: disabled||loading, busy: loading }}` so VoiceOver/TalkBack announce the loading + disabled states correctly. Loading state renders `ActivityIndicator` colored to the button's foreground token instead of the label and disables `onPress`.
+- `apps/mobile/src/components/primitives/index.ts` barrel.
+- `apps/mobile/src/components/primitives/__tests__/EditorialButton.test.tsx` — 13 tests (43 total in the mobile suite). Coverage: outline + filled token resolution, onPress fires on tap, disabled + loading both block onPress, ActivityIndicator replaces the label while loading, accessibilityState surfaces both `disabled` and `busy`, hitSlop math reaches the 44px floor, accessibilityLabel defaults to label and accepts override, dark-mode token inversion via mocked `useTheme(darkTheme)`, testID forwarding, same-render double-tap latch (codex P2 — see below), and post-loading-flip press lockout.
+
+### Adversarial review (codex)
+One round of `codex exec` adversarial review found one issue before ship:
+- **P2** — same-render double-tap race: two synchronous presses fired before the parent could flip `loading=true` would both invoke `onPress`, double-submitting mutations (e.g. two `watering_events` rows for one tap). Fixed via an internal `useRef` latch that drops every press after the first within a single tick; the latch clears on the next macrotask so the button stays responsive once the parent's `loading` state has settled. Test exercises both the synchronous double-tap drop and the post-clear recovery using `jest.useFakeTimers()`.
+- **No P1s.** Token inversion path, Pressable's pressed-state callback typing, both `disabled` and `accessibilityState.disabled` being set, and the 44px hit-target math all checked clean. Font-loading is gated at the app shell (`app/_layout.tsx` already blocks render until `useFonts()` resolves), so the button doesn't need an independent fallback branch.
+
+### Notes
+- Hit target math: padding 12v + Fraunces line height 20 + padding 12v = 44px visual height; horizontal padding 24 × 2 = 48 + label width comfortably exceeds 44 on every real-copy CTA. `HIT_SLOP_V` is computed as `ceil((44 - (paddingV*2 + fontSize)) / 2)` so any future tighter padding (e.g. dropping line height to 18) keeps the effective target at 44 by widening hitSlop. With current values that resolves to 2 top + 2 bottom = a 48px effective touch area on the vertical axis. Test asserts `minHeight + top + bottom ≥ 44`.
+- The double-tap latch lives inside the button rather than in every parent screen so the contract is "calling `onPress` is at-most-once-per-tick by construction." Parent screens still own the `loading=true` flip on the result of `onPress` to handle the slower async path; the latch only handles the synchronous burst.
+- Pressable's `style` callback type (`StyleProp<ViewStyle> | ((state: PressableStateCallbackType) => StyleProp<ViewStyle>)`) is used directly — annotating the parameter with `PressableProps['style']` would lose the `{ pressed }` narrowing, so we let the function-form callback infer naturally.
+- V1 scope locks held: no styled-components, no nativewind, no `<ThemeProvider>`, no additional variants beyond outline + filled, no leftIcon/rightIcon, no ghost or destructive variant. Pressable stays (TouchableOpacity is RN's legacy API).
+
 ## [0.1.11.0] - 2026-05-04
 
 E2-006 — the three icon primitives that anchor PlantCare's visual vocabulary: `<Droplet>` (the watering metaphor, used by both the WATER TODAY chip on A-1/A-2 and the 7-day ledger row on A-2/A-6), `<LeafIcon>` (the SKIP-state metaphor on A-1/A-2), and `<HandOnSoilIcon>` (the CHECK-SOIL metaphor). All three are line-drawn deep-forest-on-cream — the "botanical field guide" treatment from `DESIGN.md` that's the load-bearing anti-AI-slop signal for this product. Implemented with `react-native-svg` rather than an icon font: V1 ships custom shapes that match the approved mockups exactly, not a re-skin of someone else's icon set.
