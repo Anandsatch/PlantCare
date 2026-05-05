@@ -11,3 +11,10 @@ export {
   type UseDiagnoseRequestConfig,
   type UseDiagnoseRequestReturn,
 } from './useDiagnoseRequest';
+export {
+  useIdentifyRequest,
+  type IdentifyInput,
+  type IdentifyStatus,
+  type UseIdentifyRequestConfig,
+  type UseIdentifyRequestReturn,
+} from './useIdentifyRequest';
