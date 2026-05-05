@@ -2,6 +2,22 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.9.0] - 2026-05-04
+
+E2-004 — `useReduceMotion()` hook. Third mobile-foundation ticket of Epic E2 (S size, depends only on E0-001). Reads the OS-level Reduce Motion preference via `AccessibilityInfo` and re-renders when the user toggles it in Settings. This is the seam the A-3 diagnose loading state will use to swap the 3-bucket pulsing copy (0-8s / 8-20s / 20s+) for a static line, and the gate every future transition/animation in the app will call before opting in to motion. 8 new mobile tests, 38 total.
+
+### Added
+- `apps/mobile/src/hooks/useReduceMotion.ts` — `useReduceMotion(): boolean`. Reads the initial value via `AccessibilityInfo.isReduceMotionEnabled()` (Promise<boolean>), subscribes to `'reduceMotionChanged'` for live updates, and removes the subscription on unmount. State defaults to `false` during the brief async window before the initial value resolves — matches the iOS factory default and is the harmless biased-toward-motion fallback per the master plan. A `mounted` flag guards the resolve path so an unmount mid-flight doesn't trigger a setState-on-unmounted warning. Promise rejection falls through to the `false` default rather than going unhandled, so a platform that fails to report a preference still produces a clean log.
+- `apps/mobile/src/hooks/__tests__/useReduceMotion.test.tsx` — 8 tests against a `jest.mock('react-native', …)` of `AccessibilityInfo`, mirroring the `useColorScheme` mock pattern in `useTheme.test.tsx`. Coverage: default `false` before the async fetch resolves, `true` resolution propagates, `false` resolution stays put, listener flip true and back to false, subscription `.remove()` called exactly once on unmount, rejected initial fetch falls through to `false` with no console.error noise, late resolution after unmount doesn't fire setState (asserted via `console.error` spy — the warning React emits when this regresses).
+- `apps/mobile/src/hooks/index.ts` — exports the new hook alongside `useTheme`.
+
+### Adversarial review (codex)
+- No P1/P2 findings. Codex verified the cleanup contract against `react-native@0.83.6` (the version pinned in `apps/mobile/package.json`): `AccessibilityInfo.addEventListener()` returns an `EmitterSubscription` with `.remove()`, so the destructor in the effect matches the runtime. The mounted-flag guard blocks the post-unmount-setState race. The `false` initial default and the lack of re-render churn (state only flips when the boolean actually changes) both stand.
+
+### Notes
+- No `Animated` polyfill, no global motion-context provider, no Storybook — V1 scope locks. Consumers will read `useReduceMotion()` directly at the call site (the diagnose loading component is the first consumer in E5-007).
+- The `'reduceMotionChanged'` event name is the RN-stable identifier — same on iOS and Android. No platform branching needed.
+
 ## [0.1.8.0] - 2026-05-04
 
 E2-003 — `usePlants()` CRUD hook. Third mobile-foundation ticket of Epic E2. With the schema landed in v0.1.7.0, the next thing every screen needs is a parameterized read/write surface over the `plants` table. This PR ships a stable callbacks object — `list` / `getById` / `create` / `update` / `archive` / `unarchive` / `remove` — backed by raw `expo-sqlite` (no ORM, per V1 scope lock). Two non-obvious decisions: (1) the data API is split into `createPlantsApi(executor)` so tests drive the same SQL bytes through a `better-sqlite3` adapter without booting Jest's RN environment, mirroring the migration test pattern; (2) `create()` and `update()` use `INSERT ... RETURNING` / `UPDATE ... RETURNING` rather than a write+read pair, so the returned row is by-definition the row produced by THIS write — codex's adversarial review caught the racey UPDATE-then-SELECT shape and the fix was a single-statement collapse. 53 mobile tests now passing (23 new for plants).
