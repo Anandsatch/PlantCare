@@ -2,6 +2,33 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.21.0] - 2026-05-04
+
+E2-007 — `<StatusChip type='water'|'skip'|'soil' />`, the right-edge per-row state pill on A-1 (Plants list) and the header-adjacent indicator on A-2 (Plant detail). Three types, three icons, three accent strokes; one component. The icon-to-type mapping is locked: `'water'` → filled `<Droplet />` + `WATER TODAY`, `'skip'` → `<LeafIcon />` + `SKIP`, `'soil'` → `<HandOnSoilIcon />` + `CHECK SOIL`. Stacks on Anandsatch/e2-icons (PR #14); auto-rebases when E2-006 merges to main.
+
+### Added
+- `apps/mobile/src/components/primitives/StatusChip.tsx` — `<StatusChip type accessibilityLabel? testID? />`. Surface fill (cream in light, forest in dark), hairline 1px border in the type's accent token (water/sage/tan), icon at 14px on the left, all-caps Inter 11/600/0.5 letter-spacing label on the right. Pill shape (`borderRadius: 999`) per the approved A-1 mockup. `alignSelf: 'flex-start'` so the chip's intrinsic width is preserved when laid out inside a row.
+- `apps/mobile/src/components/primitives/__tests__/StatusChip.test.tsx` — 17 tests. Per-type: icon component + label string + surface/accent border tokens + default accessibilityLabel. Shared shape: custom accessibilityLabel override, non-interactive (no Pressable/onPress, exactly 2 children), pill `borderRadius: 999` + `borderWidth: 1`, all-caps Inter sizing per DESIGN.md, dark-mode token swap (mock `useTheme` → `darkTheme`, surface flips cream→forest, label color flips dark→cream, accent token water is mode-stable per DESIGN.md), `accessible=true` on chip + `accessible=false` on inner Text (single VoiceOver announcement), all three types render icon at size 14, testID forwarding. Total mobile tests: 62.
+- Barrel export updated: `StatusChip` + `StatusChipProps` re-exported from `apps/mobile/src/components/primitives/index.ts`.
+
+### Type → icon → accent → label mapping (the three-color metaphor lock)
+
+| `type` | Icon | Accent token | Label | Default a11y |
+|--------|------|--------------|-------|--------------|
+| `'water'` | `<Droplet filled />` | `water` (#A8C5D9) | `WATER TODAY` | `"Water today"` |
+| `'skip'` | `<LeafIcon />` | `sage` (#B8C5A6) | `SKIP` | `"Skip watering"` |
+| `'soil'` | `<HandOnSoilIcon />` | `tan` (#C9A873) | `CHECK SOIL` | `"Check soil"` |
+
+The `colorKey`, `iconName`, and `label` for each type are sourced from `@plantcare/theme/statusTokens` rather than redefined here, so future tickets touching the status vocabulary (Quick Diagnose suggestion chips, weekly review summary chips) read the same single table and can't drift.
+
+### Notes
+- Surface fill matches DESIGN.md "Status icon system": all three chips share `surface` fill so legibility lives in the **icon shape + label + hairline accent stroke**, not the chip background. The status fills on cream are 1.6-2.1:1 (below WCAG 3:1 graphical threshold) — color is decorative reinforcement; the icon shape and the all-caps label are the load-bearing semantic signals.
+- Non-interactive in V1, by design. The parent `<PlantCard>` row is the pressable surface; the chip is a status badge, not a button. No `Pressable`, no `onPress`, no animation, no Reanimated — those are explicit V1 scope locks. If a future ticket needs a tappable chip (e.g. "tap to log this water"), it'll be a separate `<StatusChipButton>` primitive, not a flag on this one.
+- `accessible=true` on the outer View groups the icon + label into one VoiceOver utterance; `accessible=false` on the inner Text prevents the iOS double-read where VoiceOver announces "WATER TODAY, Water today". The chip's own label is a fallback — the parent `<PlantCard>` typically announces `"Monstera Mona, water today, last watered 5 days ago"` and VoiceOver reads the card label first.
+- All token reads go through `useTheme()` at render time, so a mid-session OS theme flip from Conservatory → Midnight reskins every chip with no per-component dark-mode code. The `water`/`sage`/`tan` accent hues are mode-stable (same hex in both themes; DESIGN.md verifies they each pass 5.57:1+ on the dark forest surface).
+- Codex adversarial review (read-only sandbox): no P1/P2 findings. Verified token coupling across theme flips, default accessibility-label strategy, and the `accessible=false` double-read prevention. One non-blocking residual note (no `flexShrink`/`maxWidth` on the chip means very large dynamic-type scales could overflow a narrow parent row) — defer to E3-001 `<PlantCard>` row layout, where the chip's parent provides the actual constraint.
+- No `<ThemeProvider>` introduced (the E2-001 lock holds). No icon font, no Lottie, no animation. The chip ships as static surface + 1px border + line-drawn SVG + Text.
+
 ## [0.1.20.0] - 2026-05-04
 
 E3-002 — `<EmptyGardenWelcome>`. Day-1 Welcome card is the single CTA when zero plants exist (the floating "+" FAB is hidden until 1+ plants exist, per the master plan's "no choice paralysis" lock). First component in the mobile primitives lane: lives at `apps/mobile/src/components/EmptyGardenWelcome.tsx`, consumes `useTheme()` directly (no `<ThemeProvider>` per V1 lock), and exposes a single `onAddFirst` prop the parent screen wires to camera capture (A-5). Two interim scaffolds documented in the file header with explicit swap-when triggers: the inline-styled CTA swaps to `<EditorialButton variant='filled' />` when E2-008 merges, and the Unicode "🪴" emoji illustration swaps to a forest-stroke SVG when E2-006 lands `react-native-svg`. Both swaps are mechanical and do not invalidate the component's API.
