@@ -2,6 +2,27 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.11.0] - 2026-05-04
+
+E2-006 — the three icon primitives that anchor PlantCare's visual vocabulary: `<Droplet>` (the watering metaphor, used by both the WATER TODAY chip on A-1/A-2 and the 7-day ledger row on A-2/A-6), `<LeafIcon>` (the SKIP-state metaphor on A-1/A-2), and `<HandOnSoilIcon>` (the CHECK-SOIL metaphor). All three are line-drawn deep-forest-on-cream — the "botanical field guide" treatment from `DESIGN.md` that's the load-bearing anti-AI-slop signal for this product. Implemented with `react-native-svg` rather than an icon font: V1 ships custom shapes that match the approved mockups exactly, not a re-skin of someone else's icon set.
+
+### Added
+- `apps/mobile/src/components/primitives/Droplet.tsx` — `<Droplet filled?: boolean; size?: number; testID?: string; accessibilityLabel?: string />`. Default size 16. Single classic teardrop path on a 24-unit canvas. `filled=true` paints the pale-blue `water` token (a watered day on the ledger / the active WATER TODAY chip); `filled=false` paints the `surface` token (cream in light, forest in dark) for outline-only droplets — same shape, different fill, one icon vocabulary.
+- `apps/mobile/src/components/primitives/LeafIcon.tsx` — `<LeafIcon size?: number; testID?: string; accessibilityLabel?: string />`. Default size 14. Asymmetric leaf outline + central vein (the curve on the right side is fuller than the left — botanical, not heraldic). Always outline-only; the SKIP chip wrapper carries the sage accent.
+- `apps/mobile/src/components/primitives/HandOnSoilIcon.tsx` — `<HandOnSoilIcon size?: number; testID?: string; accessibilityLabel?: string />`. Default size 14. Open palm + four short finger strokes above a shallow soil mound. At 14px the palm + soil pairing carries silhouette legibility; the fingers register as texture rather than countable digits.
+- `apps/mobile/src/components/primitives/index.ts` — barrel export for the three primitives + their prop types. Future E2-007/008/009 primitives will land alongside.
+- `apps/mobile/src/components/primitives/__tests__/icons.test.tsx` — 15 tests across the three icons. Mocks `useTheme()` per-suite (matching the `src/hooks/__tests__/useTheme.test.tsx` pattern), asserts default + custom sizes, verifies `filled` flips the Droplet's fill between `water` and `surface` tokens, asserts `strokeWidth=1` is preserved at every state, asserts the dark-mode case (mock returns `darkTheme`, fill payload swaps from cream to forest with no code path change), and verifies `accessibilityLabel` forwards to the Svg root on every primitive. Total mobile tests: 45.
+- `react-native-svg@15.15.3` — pinned exact to match Expo SDK 55's bundled native module rather than allowing patch drift via `^`. SDK-bundled native modules can behave differently in EAS dev clients vs Expo Go when the JS package version drifts from the pinned native one.
+
+### Notes
+- All token reads go through `useTheme()` at render time, so a system-theme flip from Conservatory → Midnight reskins every icon with no per-primitive dark-mode code. The fill on outline-only icons resolves to `theme.colors.surface` (cream in light, forest in dark) and the hairline resolves to `theme.colors.stroke` (forest in light, cream in dark) — the same Path nodes, mirrored treatment.
+- Default sizes (16 for Droplet, 14 for Leaf and HandOnSoil) match the approved A-1/A-2 mockups: Droplet anchors the WATER TODAY chip and ledger row, the leaf and hand sit slightly tighter inside the SKIP and CHECK SOIL chips. Callers needing a different density (the watering ledger may bump Droplet to 20+ at a future iteration) pass `size`.
+- `strokeWidth=1` is the hairline weight from the design system. At very small sizes on lower-DPR devices the hairline can fade slightly; the 14-16px defaults sit safely above that threshold and the chip wrapper carries semantic legibility independent of stroke contrast.
+- Path constants live at module top, not inlined in JSX. Design QA can read the path data directly without grepping JSX.
+- No `<ThemeProvider>` introduced — `useTheme()` reads `useColorScheme()` directly, consistent with the E2-001 lock.
+- No icon font, no Lottie, no animation. V1 ships static SVG line drawings, full stop. Animation lives in E2-004 (`useReduceMotion()`); these primitives don't move.
+- Codex adversarial review surfaced one P2 (version pin) which was addressed by pinning `react-native-svg` exactly to 15.15.3 instead of `^15.15.4`. No P1s.
+
 ## [0.1.10.0] - 2026-05-04
 
 E2-005 — API client + `ApiResult<T>` discriminated union. Third mobile-foundation ticket of Epic E2. Locks the single transport surface every screen will call into for the four LLM proxy endpoints (identify, diagnose, consult, review). The reason this PR is short on lines but long on commentary is the kind enumeration: `'network' | 'timeout' | 'server' | 'layer1_reject' | 'low_confidence' | 'parse_error' | 'queued'`. Seven kinds, no `'unknown'` fallthrough. Each one drives a different copy block in the A-3 / A-5 error states; collapsing two of them would force the screen layer to re-derive the distinction from `message` strings, which is exactly the per-screen drift the master plan calls out (lines 682-705). Same rationale as the E1-003 `ConsultResponse` fork — when the parser, the router, the route handler, and the screen all need to switch on the same dimension, the dimension belongs in the type. 29 new client tests, 59 mobile tests total.
