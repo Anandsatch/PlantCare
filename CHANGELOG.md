@@ -2,6 +2,25 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.14.0] - 2026-05-04
+
+E2-010 — `<HeroPhoto>` primitive. The editorial photo block used on A-2 (full-bleed plant detail hero), A-3 (camera result), and A-4 (add plant confirmation). One primitive, one rounded-corner contract, one cream-skeleton-while-loading behavior. Built on RN's legacy `Image` (no `expo-image` — V1 ships lean; FileSystem-stored photos don't need network caching or progressive JPEGs). The accessibilityLabel is required at the TypeScript prop level so callers can't ship an unlabeled hero photo, even though RN's underlying `Image.accessibilityLabel` is optional. 13 component tests pass; 43 mobile tests total.
+
+### Added
+- `apps/mobile/src/components/primitives/HeroPhoto.tsx` — the primitive. Props: `source` (RN `ImageSourcePropType` — `{uri}` for FileSystem photos, `number` for required() static assets), `aspectRatio?` (default 1; A-2 overrides for full-bleed), `rounded?` (`true`→24, `false`→0, `number`→explicit radius; default `true`), `accessibilityLabel` (REQUIRED), `testID?`, `onLoad?`, `onError?`. Uses `useTheme()` for the cream skeleton color (light: `#FAF6EE`, dark: `#1F3826` forest).
+- `apps/mobile/src/components/primitives/index.ts` — barrel.
+- `apps/mobile/src/components/primitives/__tests__/HeroPhoto.test.tsx` — 13 tests covering default radius (24), `rounded={false}` → 0, numeric `rounded` passthrough, default aspectRatio (1), custom aspectRatio (4/3), accessibilityLabel forwarded to wrapper View, accessibilityRole='image' on wrapper, source object passed through to Image unchanged, onLoad fires through, onError fires + Image is unmounted (silent cream rect fallback), a11y identity preserved on the wrapper after error so screen readers still announce, dark-mode skeleton uses Midnight surface token, light-mode skeleton uses cream surface token.
+
+### Notes
+- **Why a wrapping `View` with `overflow: 'hidden'`:** documented Android RN gotcha — direct `borderRadius` on `<Image>` does not consistently clip the underlying bitmap on Android across all `resizeMode` + image-format combinations. A View wrapper with `overflow:'hidden'` makes the rounded shape behave identically across iOS and Android with one visual contract. Codex review confirmed this pattern.
+- **Silent-failure design:** on `onError`, the Image is unmounted and the cream-rect wrapper stays. No broken-image icon, no placeholder text, no spinner. The accessibilityLabel still rides on the wrapper so VoiceOver/TalkBack announces "image, Photo of …" rather than going silent — the cream rectangle is the announced element. This preserves the editorial voice (anti-AI-slop: no generic-app polish noise).
+- **Single accessibility identity:** the wrapper View owns `accessible`, `accessibilityRole='image'`, and `accessibilityLabel`. The inner Image carries `accessible={false}` and `importantForAccessibility='no-hide-descendants'` so screen readers announce once, not twice.
+- **No `expo-image`:** V1 scope lock. FileSystem photos are local — no network round-trip, no caching benefit. expo-image's progressive JPEG and disk cache become valuable post-V1 if remote photos enter the picture; for now the dep cost isn't earned.
+- **No spinner overlay, no progressive loading, no caching layer:** all V1 scope locks. The cream skeleton (visible until `onLoad`) is the editorial-voice loading state.
+
+### Adversarial review (codex)
+- One round of `codex exec` adversarial review against the 6 documented risk surfaces (TypeScript-required label vs RN's optional underlying type, iOS+Android borderRadius clipping, skeleton flash on slow devices, large-image RAM teardown, silent error-state a11y, general implementation defects). **No P1 or P2 findings.** Codex confirmed: the prop-layer enforcement of accessibilityLabel works, the `overflow:'hidden'` wrapper is the correct cross-platform clipping pattern, and the cream-rect error state remains the accessible element rather than going silent.
+
 ## [0.1.13.0] - 2026-05-04
 
 E2-009 — `<FAB>` primitive. The forest-circle floating action button anchored to the bottom-right of the Plants list (A-1). Tap launches the camera in identify mode; long-press opens the "Add a plant / Quick diagnose" popover wired in E3-004. This PR ships only the primitive (the circle, the press handlers, the a11y plumbing). 56×56 (Material default — exceeds the 44×44 a11y minimum, no `hitSlop` needed). Forest fill (`theme.colors.text`) with cream "+" glyph (`theme.colors.surface`); cross-platform shadow (iOS `shadow*` + Android `elevation: 3`); pressed state is opacity 0.85, no Reanimated, no scale transform — V1 lock against tween dependencies. 15 component tests added — total mobile suite is now 45.

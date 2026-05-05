@@ -12,3 +12,6 @@ export type { HandOnSoilIconProps } from './HandOnSoilIcon';
 export { EditorialButton, type EditorialButtonProps } from './EditorialButton';
 // Primitives barrel. Future E2 tickets append here.
 export { FAB, type FABProps } from './FAB';
+// Primitives barrel. Per-screen composites import from here so call sites stay
+// flat (`import { HeroPhoto } from '@/components/primitives'`).
+export { HeroPhoto, type HeroPhotoProps } from './HeroPhoto';
