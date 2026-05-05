@@ -23,3 +23,8 @@ export {
   shouldDismissOnDragRelease,
   type EditorialBottomSheetProps,
 } from './EditorialBottomSheet';
+// Primitives barrel — Conservatory design system building blocks.
+// Re-exports types alongside components so screens consuming a primitive
+// can also import its prop types from a single path.
+export { ToastBanner } from './ToastBanner';
+export type { ToastBannerAction, ToastBannerProps, ToastBannerType } from './ToastBanner';
