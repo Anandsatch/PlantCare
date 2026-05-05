@@ -2,6 +2,44 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.7.0] - 2026-05-04
+
+E2-002 — SQLite schema + migrations. Second mobile-foundation ticket of Epic E2. Local SQLite via `expo-sqlite` is the V1 storage layer — no cloud sync, no ORM, raw SQL. This PR ships all six tables (`plants`, `watering_events`, `photos`, `notes`, `diagnoses`, `sync_queue`), every index from the master plan plus two cascade-companion indexes surfaced in adversarial review, a versioned migration runner using SQLite's built-in `PRAGMA user_version`, and an `openDb()` that sets `PRAGMA foreign_keys = ON` at connection time so the FK constraints actually enforce. 30 mobile tests now passing (15 new for db).
+
+### Added
+- `apps/mobile/src/db/schema.ts` — single-source-of-truth SQL string for the V1 schema. Includes the WORKBACK additions on `plants` (`is_indoor INTEGER NOT NULL DEFAULT 1` with a `CHECK (is_indoor IN (0, 1))` bool guard, `override_interval_days INTEGER` nullable for the custom-watering-schedule toggle). All cascade FKs spelled out: `watering_events`, `photos`, `notes`, `diagnoses` ON DELETE CASCADE from `plants`; `diagnoses.photo_id` ON DELETE CASCADE from `photos`; `plants.hero_photo_id` ON DELETE SET NULL from `photos`. `sync_queue` is intentionally unconstrained (`ref_table` / `ref_id` are dynamic strings — the worker dispatches by table name).
+- `apps/mobile/src/db/migrations.ts` — versioned migration runner. `runMigrations(db, migrations)` reads `PRAGMA user_version`, runs every pending migration in `version` order, each inside its own transaction so a partial failure rolls back both the schema mutation and the version bump. Validates the migration list at startup (positive integers, monotonic, no duplicates) — silently corrupted upgrade graphs are the worst kind of bug.
+- `apps/mobile/src/db/db.ts` — `openDb()` opens `plantcare.db` via `expo-sqlite`'s `openDatabaseAsync`, runs `PRAGMA foreign_keys = ON` (SQLite default is OFF — without this, every FK constraint in the schema is inert), then runs migrations. Memoized: subsequent calls return the same `SQLiteDatabase` instance. Cache is dropped on failure so the next call retries instead of permanently returning a rejected promise.
+- `apps/mobile/src/db/index.ts` — barrel.
+- `apps/mobile/src/db/__tests__/migrations.test.ts` — 16 tests (30 total in the mobile suite). Drives the migration runner against a `better-sqlite3`-backed `SqlExecutor` adapter (chosen over `node:sqlite` because CI runs on Node 20 and `node:sqlite` is Node 22.5+). Coverage: all 6 tables created, all 8 indexes created, FK declarations match the contract per `PRAGMA foreign_key_list`, FK violation rejected when `foreign_keys = ON`, plant→watering_events and photo→diagnoses cascade deletes, `is_indoor` defaults to 1 + CHECK rejects out-of-range values, `idx_plants_active` and `idx_queue_drainable` partial indexes selected by the query planner via `EXPLAIN QUERY PLAN`, `idx_plants_hero_photo` selected for the photo-cascade lookup path, hero_photo_id correctly set to NULL on photo delete, `user_version` advances to target on first run and is no-op on re-open, transactional rollback when migration up() throws (verified via `user_version` stays at 0 + dropped table), and migration validation rejects duplicate / out-of-order / non-positive versions.
+- `expo-sqlite@~15.2.0` runtime dep + `better-sqlite3@^12.9.0` dev dep (test backend only — the on-device build still goes through expo-sqlite).
+
+### Adversarial review (codex)
+Two rounds of `codex exec` adversarial review caught three issues before ship:
+- **P1** — first-pass test imported `node:sqlite` which would have failed on CI's Node 20 runner. Switched to `better-sqlite3` (Node 20+ compatible). Local Node 25 hides this gap; CI doesn't.
+- **P2** — missing `idx_diagnoses_photo` for the `diagnoses.photo_id REFERENCES photos(id) ON DELETE CASCADE` cascade lookup. Added.
+- **P2** — missing `idx_plants_hero_photo` for the `plants.hero_photo_id REFERENCES photos(id) ON DELETE SET NULL` cascade lookup. Added as a partial index (`WHERE hero_photo_id IS NOT NULL`) since the SET NULL path only ever matches non-null rows.
+- **Rejected** — codex's third-pass suggestion to remove `diagnoses.plant_id` as redundant with `photo_id -> photos.plant_id` violates V1 scope locks. The master plan explicitly defines both columns: `plant_id` is nullable for the Quick Diagnose flow where a photo isn't attached to a plant yet, and photos aren't reassigned between plants in V1 (no UI for that).
+
+### Notes
+- All timestamps are unix milliseconds (`INTEGER`). The watering engine does millisecond math, not calendar-day math, to survive DST flips and the international date line (E4-002 critical regression). INTEGER handles years 1970-2262 — well beyond any V1 user retention window.
+- Soft-delete on `plants` uses `archived_at` rather than DELETE, so the `ON DELETE CASCADE` on watering_events / photos / notes / diagnoses doesn't wipe history when a plant is archived. The CASCADE only fires on the (currently uncommanded) hard delete path, where wiping history is the right behavior.
+- `idx_plants_active` and `idx_queue_drainable` are partial indexes — they only contain the rows the app actually queries (`archived_at IS NULL` plants, `status = 'pending'` queue entries). Smaller than full indexes, and the planner picks them automatically when the query's WHERE clause matches the index predicate. EXPLAIN QUERY PLAN tests guard against accidental full-table scans.
+- expo-sqlite's `SQLiteDatabase` class is structurally compatible with the `SqlExecutor` interface defined in `migrations.ts` — no cast needed at the `db.ts` call site. Tests exploit the same shape via a thin `better-sqlite3` adapter.
+
+## [0.1.6.0] - 2026-05-04
+
+E2-001 — `useTheme()` hook. First mobile-foundation ticket of Epic E2. Wraps `@plantcare/theme`'s already-shipped `lightTheme` (Conservatory) and `darkTheme` (Midnight Conservatory) constants in a one-line hook driven by RN's `useColorScheme()`. No `<ThemeProvider>` and no `useMemo` — module-level frozen constants give stable identity across renders, so RN re-renders consumers automatically when the OS appearance flips. Per the master plan: no manual theme override in V1; the OS decides.
+
+### Added
+- `apps/mobile/src/hooks/useTheme.ts` — `useColorScheme() === 'dark' ? darkTheme : lightTheme`. Anything else (`null`/`undefined` during cold start, `'unspecified'` on Android with no preference, `'light'`) falls through to light, matching the iOS factory default and DESIGN.md's cream-as-canonical-surface stance.
+- `apps/mobile/src/hooks/__tests__/useTheme.test.tsx` — 7 tests: light → Conservatory, dark → Midnight, null/undefined/'unspecified' → light, reference stability across same-scheme renders, reference flip on scheme change. Mock widens RN's legacy `ColorSchemeName` (which incorrectly omits null in the public types) so the cold-start branches are exercised.
+- `apps/mobile/src/hooks/index.ts` barrel.
+
+### Notes
+- The mock cast (`as unknown as jest.Mock<WidenedScheme, []>`) works around `react-native`'s legacy public-types entry declaring `useColorScheme(): ColorSchemeName` without `null | undefined`. The newer `types_generated/` entry is accurate, but the package's `"types"` field still resolves the legacy version. The runtime contract — null during cold start, undefined on background-resume — is real and tested.
+- DOD criterion "<100ms theme switch via system setting" is structurally satisfied: RN re-renders `useColorScheme` consumers on `Appearance` change events, and the hook does no async work. Empirical measurement waits on a live mockup screen (E2-013 Component Garden).
+
 ## [0.1.5.0] - 2026-05-04
 
 E1-005 — LLM eval harness. With all four endpoints (identify, diagnose, consult, review) sharing the tiered router, this PR adds the regression suite that catches contract drift on the parser + router state machine without burning OpenRouter quota on every push. Two-mode design: the default mock mode drives canned LLM JSON through the real router and asserts the parsed shape; a future EVAL_REAL_API=1 mode (scaffolded as `.todo`) will hit live OpenRouter and use the same fixtures as the ±10 confidence band baseline. The mock-mode bug-catchers are the snapshot files plus a per-endpoint `expectCallArgs` that validates the OpenRouter wire shape (kind, imageDataUrl/userMessage, system-prompt fragment, apiKey).
