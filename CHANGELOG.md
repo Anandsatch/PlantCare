@@ -2,6 +2,30 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.16.0] - 2026-05-04
+
+E2-012 — `<ToastBanner>` primitive. The third Epic E2 mobile-foundation ticket. A primitive only — positioning, queueing, and animation orchestration belong to parents (E7 sync queue surface, E11 budget meter, Day 1 nudges). Three types per the master plan: `'warn'` (tan, transient), `'info'` (sage, transient Day 1 nudges), `'pending'` (tan, persistent — for the offline sync queue's "{N} items syncing" banner). 18 new component tests pass; mobile suite is now 73 green.
+
+### Added
+- `apps/mobile/src/components/primitives/ToastBanner.tsx` — `<View>` + `<Text>` + optional action `<Pressable>`. Background derives from `useTheme()` per type — warn and pending use `theme.colors.tan` (master plan: both surface as tan), info uses `theme.colors.sage` (the "info → cream/sage variant" hint resolved as sage since cream is the surface and would be invisible). Padding 16, border radius 12, flex row, message gets `flex: 1` and `numberOfLines={3}` so a long message wraps without pushing the action off-screen.
+- Auto-dismiss: `'warn'` and `'info'` default to 4000ms; `'pending'` defaults to undefined (persistent — the queue is the source of truth and the parent removes the banner when drained). Explicit `autoDismissMs={0}` disables auto-dismiss for any type. Timer fires `onDismiss` on EXPIRY only — the `useEffect` cleanup just clears the timeout, so an unmounted parent never receives a phantom dismiss. Re-arm semantics: the timer resets when `type`, `message`, `dismissMs`, or `visible` changes, so a flickering message gets the user a full read window on the new content rather than racing to fire on the old one.
+- `accessibilityRole='alert'` on warn (interrupts VoiceOver, matches the master plan's "warn announces immediately"); `accessibilityRole='status'` on info/pending (master-plan-spec, set as a literal — RN's typed `AccessibilityRole` omits 'status' since it's a web-platform role and the native bridges ignore unknown roles harmlessly). Android-only `accessibilityLiveRegion`: `'assertive'` on warn, `'polite'` on info/pending. iOS doesn't have a parallel View prop; per-event announcements there are a parent concern (`AccessibilityInfo.announceForAccessibility`).
+- `apps/mobile/src/components/primitives/index.ts` — barrel re-exporting component + types so screens can import `ToastBannerType` / `ToastBannerProps` / `ToastBannerAction` from a single path.
+- `apps/mobile/src/components/primitives/__tests__/ToastBanner.test.tsx` — 18 tests using `jest.useFakeTimers()` for the timer paths. Coverage: per-type backgrounds (warn=tan, info=sage, pending=tan), message renders verbatim, action wires through, no-action variant skips the button, default 4s auto-dismiss for warn + info, pending stays put under 30s, explicit 0 disables, custom 2000 fires at 2000, unmount before expiry skips onDismiss, message change re-arms the timer (advance 3000 → change → advance 3000 → not yet → +1000 fires once), accessibilityRole per type, dark theme tokens swap (tan, sage), `visible={false}` skips render and skips the timer.
+
+### Adversarial review (codex)
+One round of `codex exec` adversarial review across the seven risk surfaces (timer leak, multi-fire, alert role + VoiceOver, hit target ≥44, reduce-motion, token coupling for pending, long-message wrap). Returned **no P1/P2 findings**.
+
+### Rejected (out of V1 scope, per ticket spec)
+- Adding a `<ToastProvider>` / queue manager — primitive only, parent owns positioning + stacking.
+- Swipe-to-dismiss gesture — master plan calls out auto-dismiss + tap-action only.
+- Slide-in / fade animations — V1 stays simple; reduce-motion compliance is automatic when there are no animations.
+- `react-native-toast-message` dependency — adds a new top-level provider model and a runtime not aligned with the per-context placement the screens need.
+
+### Notes
+- The `'info' → sage` mapping is one read of the master plan's "cream/sage variant" hint. Cream IS the surface in light mode (`#FAF6EE`), so a cream banner over cream surface would be invisible. Sage carries enough contrast against both light cream and dark forest surfaces and matches the master plan's "info/pending are non-disruptive" tone (sage is the calm/healthy hue in the three-color metaphor lock). If E11's Day 1 nudge mockups land with a different visual, the swap is a one-line change in `bannerColor()`.
+- The action button uses `hitSlop={8}` — combined with the 16px container padding and 4px button padding, the effective hit target reaches the 44×44 floor for typical action labels (3-6 chars). Visually-smaller labels can grow `hitSlop` at the call site; the primitive ships a sane default rather than forcing every consumer to specify one.
+
 ## [0.1.15.0] - 2026-05-04
 
 E2-011 — `<EditorialBottomSheet>` primitive. The most complex of the V1 primitive set: focus trap, swipe-to-close, reduce-motion compliance, and a deliberate no-extra-deps ship. RN's built-in `Modal` is the foundation — it already handles Android back-button (`onRequestClose`), the iOS focus trap (`accessibilityViewIsModal`), and cross-platform mount/unmount. PanResponder owns the swipe-down gesture; we explicitly chose it over `react-native-gesture-handler` (already a workspace dep but requires `<GestureHandlerRootView>` at the app root) and `@gorhom/bottom-sheet` (rejected by V1 scope locks). The result: ~250 lines, zero new deps, 19 new tests on top of the 30 existing for 49 mobile tests total.
