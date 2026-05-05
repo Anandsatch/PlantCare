@@ -2,6 +2,25 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.22.0] - 2026-05-04
+
+E5-007 — `<DiagnoseLoadingState>`. 3-bucket pulse loading copy ("Looking closely…" / "Almost there…" / "Trying a more careful look…") makes the LLM round-trip feel like a craftsperson at work, not a freezing app; reduce-motion swaps to static dots. First UI component in `apps/mobile/src/components/`. 15 new mobile tests, 53 total. Stacks on `Anandsatch/e2-reduce-motion` (PR #9); auto-rebases when E2-004 merges.
+
+### Added
+- `apps/mobile/src/components/DiagnoseLoadingState.tsx` — the A-3 loading line. Three time-bucketed Fraunces italic copy variants (0–8s `Looking closely…`, 8–20s `Almost there…`, 20s+ `Trying a more careful look…`) sourced verbatim from DESIGN.md and the master plan. Each copy variant sits above a horizontally-centered row of three 6px dots that fade between 0.3 → 1.0 opacity over 600ms with a 150ms stagger across dots, producing a left-to-right wave rather than a synchronized blink. Reduce-motion path skips `Animated.loop` entirely (not opacity-clamped — fully bypassed; the only audit-defensible compliance) and renders the dots at a flat 0.6 opacity. Default `startedAtMs` is captured once via `useRef` at first render so the bucket clock survives parent re-renders without restarting. `accessibilityLabel` defaults to `'Diagnosing your plant photo'`; `accessibilityLiveRegion='polite'` set on the root View so Android announces bucket transitions (iOS ignores the prop on View, which is fine — the visible copy carries the rest).
+- `apps/mobile/src/components/index.ts` — barrel re-exporting `DiagnoseLoadingState` and `DiagnoseLoadingStateProps`.
+- `apps/mobile/src/components/__tests__/DiagnoseLoadingState.test.tsx` — 15 tests covering bucket boundaries (0/7999/8000/19999/20000/60000), self-managed clock auto-advance via fake timers (mount → advance 8500ms → bucket 1 copy lands), interval cleanup on unmount, reduce-motion gating (Animated.loop spy assertions: 0 calls when reduce-motion is on, 3 calls per dot when off), accessibility prop forwarding (custom + default labels, `accessibilityLiveRegion='polite'`), dark/light theme token resolution, and the codex-P2-driven re-render suppression test that mounts a probe wrapper and asserts the wrapper does not re-render across 12 interval ticks within a single bucket.
+
+### Adversarial review (codex)
+- **P2** — first-pass implementation stored a raw `clockTick: number` in state and recomputed the bucket via `useMemo`. `useMemo` only memoizes the bucket value; setting state every 250ms still reconciled the entire subtree four times per second, defeating the stated churn-reduction goal. Fixed by storing the bucket index directly (`useState<0 | 1 | 2>`) and calling `setInternalBucket(next)` on every interval — React's setState bail-out skips the re-render when `next === current`, so the subtree only reconciles on actual bucket flips (twice over the 0→1→2 lifecycle). Added a render-count probe test to lock the behavior.
+- **Documented, not fixed** — `accessibilityLiveRegion='polite'` is a no-op on iOS (RN ignores the prop on View). Inline comment notes the platform asymmetry; the visible Fraunces copy carries the announcement on iOS via the standard accessibility focus path. Bucket boundary inclusivity is locked: elapsed === 8000 lands in bucket 1, elapsed === 20000 lands in bucket 2 (each boundary is the start of the next bucket). Tested explicitly.
+- **Rejected** — none. No reviewer suggested spinner-replacement, Reanimated upgrade, LottieView swap, or percentage progress bar (per V1 scope locks).
+
+### Notes
+- Stacks on `Anandsatch/e2-reduce-motion` (PR #9). The PR base is `Anandsatch/e2-reduce-motion`; when E2-004 merges to `main`, GitHub auto-rebases the base of this PR to `main`.
+- The 250ms interval cadence is the minimum that lets bucket transitions land within ~one frame of the canonical boundary without burning render budget. Once bucket 2 is reached the interval auto-stops — final state, no further transitions to drive.
+- No `<ThemeProvider>`, no Reanimated, no Lottie, no spinner, no percentage progress bar — V1 scope locks. The pulse uses RN's built-in `Animated` API with `useNativeDriver: true` so the animation runs on the UI thread.
+
 ## [0.1.21.0] - 2026-05-04
 
 E2-007 — `<StatusChip type='water'|'skip'|'soil' />`, the right-edge per-row state pill on A-1 (Plants list) and the header-adjacent indicator on A-2 (Plant detail). Three types, three icons, three accent strokes; one component. The icon-to-type mapping is locked: `'water'` → filled `<Droplet />` + `WATER TODAY`, `'skip'` → `<LeafIcon />` + `SKIP`, `'soil'` → `<HandOnSoilIcon />` + `CHECK SOIL`. Stacks on Anandsatch/e2-icons (PR #14); auto-rebases when E2-006 merges to main.
