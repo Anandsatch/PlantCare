@@ -9,3 +9,6 @@ export type { DiagnoseLoadingStateProps } from './DiagnoseLoadingState';
 // re-exported from here.
 export { WateringLedger } from './WateringLedger';
 export type { WateringEvent, WateringLedgerProps } from './WateringLedger';
+// Components barrel. Composites that aren't primitive enough to live in
+// `./primitives` (e.g. screen-level rows like PhotoTimeline) re-export here.
+export { PhotoTimeline, formatRelativeDate, type PhotoEntry, type PhotoTimelineProps } from './PhotoTimeline';
