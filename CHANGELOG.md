@@ -2,6 +2,30 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.19.0] - 2026-05-04
+
+E5-005 — photo compression helper. Photos are local-only in V1 (no cloud upload, no R2, no sync queue for photos); compression is bounded at 1024px @ 0.7 quality so a 12MP iPhone source becomes ~150-300 KB and the device storage curve stays predictable across long-term users (10 plants × 5 photos = ~10-15 MB total local). The helper is the on-disk gate every camera capture flows through: `expo-image-manipulator` resizes + recompresses, then `expo-file-system/legacy` copies the result into `documentDirectory + plants/<id>/` (NOT cacheDirectory — survives app restarts, not OS-evictable). E5-006's `useDiagnoseRequest` and the upcoming Add Plant flow both consume the same compressed asset for upload, so there's one re-encode per capture, not two.
+
+### Added
+- `apps/mobile/src/photos/compress.ts` exporting `compressPhoto({sourceUri, plantId?, nowMs?})` → `{uri, width, height, sizeBytes}`. Pipeline: probe dimensions via no-op `manipulateAsync(uri, [], ...)` → branch on orientation (`{width: 1024}` for landscape/square, `{height: 1024}` for portrait) only when the longer edge exceeds 1024 → recompress at quality 0.7, JPEG → copy into `documentDirectory + plants/<id>/<nowMs>-<rand8hex>.jpg` → best-effort delete the manipulator's cache file. Source-already-small inputs skip the resize step but still get the quality-0.7 recompress; per spec the goal is bounded size, not source-of-truth detection.
+- `getPhotoDirectory(plantId)` helper for callers that need the photo directory before any photo exists (e.g. listing existing captures, pre-creating the directory ahead of a bulk import). Path-traversal-safe: `plantId` is sanitized to `[A-Za-z0-9_-]` and clamped to 64 chars before being interpolated, so `'../../../etc/passwd'` collapses to a directory inside `plants/`.
+- `PhotoCompressError` class with a typed `kind` discriminator (`'source-missing' | 'manipulate-failed' | 'storage-unavailable' | 'copy-failed'`) and ES2022 `cause` preservation. Wrapping `manipulateAsync`/`copyAsync`/`makeDirectoryAsync` failures keeps the original RN native-module error reachable via `err.cause` for observability without leaking the unstable native message into product UX.
+- 18 unit tests in `apps/mobile/src/photos/__tests__/compress.test.ts` covering: landscape resize-by-width, portrait resize-by-height, ≤1024 no-resize, quality 0.7 boundary, JPEG format always (never PNG), output under `plants/<plantId>/`, plantId-omitted fallback to `unattached/`, filename `<nowMs>-<8hex>.jpg` shape, documentDirectory prefix, sizeBytes from `getInfoAsync`, empty-source `source-missing` throw, manipulate-failure cause preservation, `intermediates: true` directory creation, post-copy cache cleanup, null-documentDirectory `storage-unavailable`, and plantId path-traversal sanitization. Mobile test count: 30 → 48.
+- `expo-image-manipulator@~55.0.15` and `expo-file-system@~55.0.17` added to `apps/mobile/package.json` — both pinned to the SDK 55 tags published by Expo's release channel.
+
+### Notes
+- `expo-file-system/legacy` is the deliberate import path. SDK 55 ships a class-based `Paths`/`File`/`Directory` API as the default export, but the legacy entry exposes the `documentDirectory` + `*Async` helpers the spec is written against. Both are supported through the V1 build window; revisit if Expo signals removal.
+- The dimension probe (`manipulateAsync(uri, [], ...)`) decodes the source twice in the worst case — once to read width/height, once to actually compress. Codex flagged this as a residual perf/memory risk. Accepted: the probe is the simplest correct way to know orientation without bringing in a separate metadata lib, and a 12MP shot through ImageManipulator runs in well under 1s on Anand's iPhone. If real-device dogfooding shows hitches on large photos we'll revisit.
+- `sizeBytes` falls back to `0` rather than `undefined` when `getInfoAsync` reports `exists: false` or omits the size field. Type stays `number` for caller ergonomics; `0` is the documented "couldn't measure" sentinel.
+- Adversarial review (codex): zero P1/P2 findings. HEIC handling is delegated to ImageManipulator's native side; the helper outputs JPEG regardless of source format, so HEIC/panorama come through as standard 1024-edge JPEGs.
+
+### Rejected (out of V1 scope)
+- Cloud upload / R2 sync of photos. V1 lock: photos local only.
+- EXIF stripping. Not in spec; revisit post-V1 if a privacy concern surfaces.
+- Watermarking. Not in spec.
+- `sharp` / native node image lib. RN-incompatible by definition.
+- Photo upload queue. E7 owns `sync_queue`; V1 doesn't enqueue photos at all.
+
 ## [0.1.18.0] - 2026-05-04
 
 E5-003 — Conservatory cream pre-prompt that fronts the OS camera dialog. The reason this exists: a pre-prompt wins on conversion + trust because users who refuse the pre-prompt can be re-asked later, but a denied iOS dialog with `canAskAgain=false` is permanent. We never want to burn that path on someone who isn't ready. The component is shaped like a screen but exported as a card so a parent (E5-004 `<CameraView>`) can compose it without the routing lock-in implied by a dedicated route.
