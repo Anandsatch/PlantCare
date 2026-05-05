@@ -15,3 +15,11 @@ export { FAB, type FABProps } from './FAB';
 // Primitives barrel. Per-screen composites import from here so call sites stay
 // flat (`import { HeroPhoto } from '@/components/primitives'`).
 export { HeroPhoto, type HeroPhotoProps } from './HeroPhoto';
+// Conservatory primitives barrel. Each primitive is its own ticket in Epic E2;
+// this barrel exists so screens can `import { ... } from '@/components/primitives'`
+// regardless of which primitives have shipped on a given branch.
+export {
+  EditorialBottomSheet,
+  shouldDismissOnDragRelease,
+  type EditorialBottomSheetProps,
+} from './EditorialBottomSheet';
