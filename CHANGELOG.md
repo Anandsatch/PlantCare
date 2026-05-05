@@ -2,6 +2,30 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.13.0] - 2026-05-04
+
+E2-009 — `<FAB>` primitive. The forest-circle floating action button anchored to the bottom-right of the Plants list (A-1). Tap launches the camera in identify mode; long-press opens the "Add a plant / Quick diagnose" popover wired in E3-004. This PR ships only the primitive (the circle, the press handlers, the a11y plumbing). 56×56 (Material default — exceeds the 44×44 a11y minimum, no `hitSlop` needed). Forest fill (`theme.colors.text`) with cream "+" glyph (`theme.colors.surface`); cross-platform shadow (iOS `shadow*` + Android `elevation: 3`); pressed state is opacity 0.85, no Reanimated, no scale transform — V1 lock against tween dependencies. 15 component tests added — total mobile suite is now 45.
+
+### Added
+- `apps/mobile/src/components/primitives/FAB.tsx` — `Pressable`-backed circle with `onPress` (required) + optional `onLongPress`. Default icon is a Fraunces "+" via RN `Text` (chosen over SVG because `react-native-svg` isn't a dep yet; "+" reads correctly even before Fraunces finishes loading because system "+" has equivalent glyph metrics). `icon?: ReactNode` slot lets callers swap in an SVG once `react-native-svg` lands. Positioning is the parent's responsibility — the primitive does not absolutely position itself, so it composes cleanly inside any layout.
+- `apps/mobile/src/components/primitives/index.ts` — barrel.
+- `apps/mobile/src/components/primitives/__tests__/FAB.test.tsx` — 15 tests: 56×56 dimensions, tap fires `onPress`, long-press fires `onLongPress` (and does NOT also fire `onPress` — the tap-vs-hold race), `accessibilityActions` absence/presence keyed off `onLongPress`, `onAccessibilityAction` routes the `'longpress'` action to `onLongPress` (Android TalkBack actions-menu fallback), `disabled` blocks every path including the accessibility-action path, default + custom `accessibilityLabel`, conditional `accessibilityHint`, dark-mode `backgroundColor` resolves to `darkTheme.colors.text`, custom `icon` prop replaces the default, idle render has no opacity override + the pressed-state contract is opacity 0.85 (no transform).
+
+### A11y notes
+- `accessibilityRole='button'`, `accessibilityLabel` defaults to `'Add a plant'`, `accessibilityHint` defaults to `'Long-press for quick diagnose'` ONLY when `onLongPress` is provided — announcing a long-press affordance that does nothing would be worse than silence.
+- The `'longpress'` accessibility action is documented by RN as the Android TalkBack local-context-menu surface. iOS VoiceOver does not surface it as a discoverable rotor action; the iOS-side affordance is the hint announcement, and the E3-004 popover provides the accessible Quick Diagnose alternative path. Documented in the file header.
+- 56×56 is the Material FAB default and exceeds the 44×44 a11y minimum, so `hitSlop` is not needed.
+
+### Adversarial review (codex)
+One round of `codex exec` adversarial review caught two P2 issues before ship:
+- **P2** — `disabled` initially only gated the touch path. The accessibility-action path was still wired whenever `onLongPress` existed, meaning a TalkBack user could invoke the action via the actions menu while the visual control was gated off. Fixed: `accessibilityActions` and `onAccessibilityAction` are now also gated on `!disabled`. Test added.
+- **P2** — comment originally implied VoiceOver could surface the `'longpress'` action as a screen-reader fallback. RN docs document this as Android-only (TalkBack actions menu); iOS VoiceOver has no equivalent rotor action. Comment + ticket footer updated to be accurate; the iOS-side affordance is the hint announcement, and the accessible Quick Diagnose path lands in E3-004's popover composition.
+- **No P1s.** Tap-vs-hold race, 44×44 target size, cross-platform shadow, and conditional hint behavior all check out. Suggestions to add a draggable FAB / Reanimated press animation / speed-dial menu / replace `Pressable` with `TouchableHighlight` were rejected per V1 scope locks.
+
+### Notes
+- `fabStyles` is exported alongside `FAB` so the pressed-state contract (opacity 0.85, no transform) can be asserted directly. RN's `Pressable` resolves its function-style on render with `pressed: false`, so structurally inspecting the rule is the cleaner contract test than driving the press state through events that the test renderer doesn't propagate cleanly.
+- The default `delayLongPress` (RN's 500ms) is preserved — no override. Faster delays misfire on slow taps; slower ones make the long-press feel unresponsive.
+
 ## [0.1.12.0] - 2026-05-04
 
 E2-008 — `<EditorialButton>` primitive. The only button vocabulary in V1: outline (cream surface + hairline forest border + Fraunces forest label) and filled (forest fill + cream Fraunces label). Used on A-2's "Mark watered" / "Add note", A-3's "Save to garden" / "Done", A-4's "Add to garden", and the weekly review's "Got it." CTA. Built on RN's `Pressable` (the modern API; no TouchableOpacity). Tokens invert correctly between Conservatory (light) and Midnight (dark) by reading `theme.colors.surface`/`theme.colors.text` — no per-variant dark-mode branch, the token table in `DESIGN.md` is the source of truth and `darkTheme` already inverts surface/text.
