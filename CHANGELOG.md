@@ -2,6 +2,29 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.18.0] - 2026-05-04
+
+E5-003 — Conservatory cream pre-prompt that fronts the OS camera dialog. The reason this exists: a pre-prompt wins on conversion + trust because users who refuse the pre-prompt can be re-asked later, but a denied iOS dialog with `canAskAgain=false` is permanent. We never want to burn that path on someone who isn't ready. The component is shaped like a screen but exported as a card so a parent (E5-004 `<CameraView>`) can compose it without the routing lock-in implied by a dedicated route.
+
+### Added
+- `apps/mobile/src/components/CameraPermissionPrePrompt.tsx` — the V1-locked Conservatory pre-prompt. Five-state machine (`resolving | idle | requesting | denied | granted`) keyed off `useCameraPermissions()` from `expo-camera`. The cream card pairs a Fraunces "PlantCare wants your camera" headline with an Inter body that addresses the privacy concern directly ("We never upload anything you don't ask us to.") plus a forest filled CTA "Allow camera access" and a quiet ghost "Not now" cancel. The denied state swaps to a tan-bordered card "Camera blocked" + "Open the Settings app to enable camera access" CTA → `Linking.openSettings()` (works on both iOS and Android per Expo docs).
+- `apps/mobile/src/components/index.ts` — barrel for the new components directory. First entry; future E5/E6 components extend it.
+- `apps/mobile/src/components/__tests__/CameraPermissionPrePrompt.test.tsx` — 14 tests covering initial idle render, the V1 lock that the OS dialog never fires before the user taps the CTA, the request flow (granted, soft-deny with retry, hard-deny → settings recovery, in-flight spinner with `accessibilityState.busy`, request rejection → idle fallback), the already-granted-on-mount short-circuit, the null-then-granted no-flash guarantee from the codex P2 below, the dark-theme token swap (Midnight Conservatory surface + cream stroke), the cancel path (fires `onCancel`, never calls `requestPermission`), and the a11y contract (`accessibilityRole='header'` on the headline, `'button'` with explicit labels on every CTA, "Open the Settings app to enable camera access" mentions Settings explicitly so VoiceOver users know the next surface). Mobile suite total: 47 tests across 5 files.
+- `expo-camera@~55.0.17` dependency in `apps/mobile/package.json`. Pinned to the SDK 55 line to match the existing `expo` major and avoid the SDK 56 canaries.
+
+### Changed
+- State machine starts in `'resolving'` instead of `'idle'` so the first render returns `null` while `useCameraPermissions()` is still `null`. Without this, an already-granted user briefly saw the cream pre-prompt before the effect collapsed it — the codex P2 from the E5-003 adversarial review. The transition rule is "only graduate from 'resolving' to 'idle' on an undetermined snapshot"; `'requesting'` and `'granted'` are never clobbered by the snapshot effect.
+
+### V1 scope locks (rejected reviewer suggestions)
+- No bypass of the pre-prompt → the OS dialog. The pre-prompt is the entire reason this ticket exists.
+- No `react-native-permissions`. `useCameraPermissions()` from `expo-camera` covers both `granted` and the `canAskAgain=false` permanent-denial signal we need.
+- No analytics / telemetry on grant rate. We dogfood first; if a measurable problem shows up we'll add it post-V1.
+- No "Privacy policy" link in the body. The body copy already names the privacy stance ("never upload anything you don't ask us to") and an extra link diverges from the editorial Conservatory voice.
+
+### Notes
+- `Linking.openSettings()` is the React Native built-in. Expo docs confirm it dispatches to `app-settings:` on iOS and the package settings intent on Android, so we don't need the platform branch the master plan flags as a fallback.
+- The component is intentionally stateless w.r.t. navigation. Parents (E5-004 `<CameraView>` is the first one) decide whether `onCancel` pops a route, dismisses a sheet, or returns to a list.
+
 ## [0.1.17.0] - 2026-05-04
 
 E4-001 + E4-002 — `useWateringEngine` v1 plus the mandatory DST/IDL regression test, bundled in one PR. The deterministic core of the daily-glance loop: given a plant + its last-watered timestamp + the current time, return one of three statuses ('water' | 'skip' | 'check_soil') that drives the A-1 list chip and the A-2 detail chip. V1 scope: species defaults table for ~10 common houseplants + per-plant override + check-soil bias zone between half-interval and full-interval. No weather, no location, no humidity/temp modifiers — those land in E6 on top of this engine. The whole thing is ~70 lines of pure function and it's covered by 21 new unit tests including the non-skippable timezone regression suite (E4-002) that this CLAUDE.md and the master plan both flag as the build's most likely shipping bug.
