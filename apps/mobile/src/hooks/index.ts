@@ -11,3 +11,11 @@ export {
   type UseDiagnoseRequestConfig,
   type UseDiagnoseRequestReturn,
 } from './useDiagnoseRequest';
+export {
+  useConsultRequest,
+  type ConsultInput,
+  type ConsultPlantContext,
+  type ConsultStatus,
+  type UseConsultRequestConfig,
+  type UseConsultRequestReturn,
+} from './useConsultRequest';

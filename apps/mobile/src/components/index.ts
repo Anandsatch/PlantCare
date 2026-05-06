@@ -18,3 +18,8 @@ export type {
   CameraMode,
   PlantCareCameraViewProps,
 } from './CameraView';
+export { AddNoteSheet, derivePhase } from './AddNoteSheet';
+export type {
+  AddNoteSavedPayload,
+  AddNoteSheetProps,
+} from './AddNoteSheet';
