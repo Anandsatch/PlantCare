@@ -40,3 +40,8 @@ export {
   DISMISS_LABEL as SUNDAY_LETTER_DISMISS_LABEL,
 } from './SundayLetterCard';
 export type { SundayLetterCardProps } from './SundayLetterCard';
+export { AddNoteSheet, derivePhase } from './AddNoteSheet';
+export type {
+  AddNoteSavedPayload,
+  AddNoteSheetProps,
+} from './AddNoteSheet';
