@@ -216,14 +216,27 @@ function buildRequestUrl(lat: number, lon: number): string {
   return `${OPEN_METEO_URL}?${params.toString()}`;
 }
 
+// Cap Retry-After at one hour. The wrapper's own KV TTL is 3600s, so a longer
+// suggested delay is meaningless to the caller; a malformed/oversized value
+// shouldn't trick downstream retry code into a multi-day wait.
+const MAX_RETRY_AFTER_SECONDS = 3600;
+
 function parseRetryAfter(header: string | null): number | undefined {
   if (!header) return undefined;
-  // Open-Meteo (and most CF-fronted APIs) emit Retry-After as integer seconds.
-  // RFC 7231 also permits an HTTP-date; we don't support that form (the api
-  // we wrap doesn't emit it, and parsing dates here adds attack surface).
-  const n = Number(header);
-  if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-  return undefined;
+  // Open-Meteo (and most CF-fronted APIs) emit Retry-After as a non-negative
+  // integer number of seconds. RFC 7231 also permits an HTTP-date; we don't
+  // support that form (the api we wrap doesn't emit it, and parsing dates here
+  // adds attack surface).
+  //
+  // Strict-parse instead of `Number(header)`:
+  //   - rejects decimals ("0.9" via Number → 0.9 → floor 0 → immediate retry)
+  //   - rejects hex / scientific / signed forms ("0x10", "1e3", "+5", "-1")
+  //   - rejects whitespace-only and empty strings (" " via Number → 0)
+  //   - rejects values past Number.MAX_SAFE_INTEGER
+  if (!/^\d+$/.test(header)) return undefined;
+  const n = Number.parseInt(header, 10);
+  if (!Number.isSafeInteger(n) || n < 0) return undefined;
+  return Math.min(n, MAX_RETRY_AFTER_SECONDS);
 }
 
 async function readCache(
@@ -257,14 +270,23 @@ function isCacheEnvelope(x: unknown): x is CacheEnvelope {
   return true;
 }
 
+// Note: every numeric field is finite-checked, not just `typeof === 'number'`.
+// `numOrNaN` upstream returns `NaN` for missing/non-numeric upstream values,
+// and `typeof NaN === 'number'` passes a permissive type-guard — which would
+// then JSON-serialize as `null` into KV. The finite check is the firewall that
+// turns "humidity is missing" into a `parse_error` instead of cached garbage.
 function isCurrentWeather(x: unknown): x is CurrentWeather {
   if (!isRecord(x)) return false;
   return (
     typeof x.time === 'string' &&
     typeof x.temperature_c === 'number' &&
+    Number.isFinite(x.temperature_c) &&
     typeof x.relative_humidity_pct === 'number' &&
+    Number.isFinite(x.relative_humidity_pct) &&
     typeof x.precipitation_mm === 'number' &&
-    typeof x.weather_code === 'number'
+    Number.isFinite(x.precipitation_mm) &&
+    typeof x.weather_code === 'number' &&
+    Number.isFinite(x.weather_code)
   );
 }
 
@@ -273,9 +295,13 @@ function isDailyEntry(x: unknown): x is DailyEntry {
   return (
     typeof x.date === 'string' &&
     typeof x.temperature_max_c === 'number' &&
+    Number.isFinite(x.temperature_max_c) &&
     typeof x.temperature_min_c === 'number' &&
+    Number.isFinite(x.temperature_min_c) &&
     typeof x.precipitation_sum_mm === 'number' &&
-    typeof x.weather_code === 'number'
+    Number.isFinite(x.precipitation_sum_mm) &&
+    typeof x.weather_code === 'number' &&
+    Number.isFinite(x.weather_code)
   );
 }
 
@@ -327,17 +353,21 @@ function normalizeResponse(raw: unknown): WeatherPayload | null {
     return null;
   }
   if (dates.length < 2) return null;
+  // The first two daily.time entries must be ISO date strings — defense in
+  // depth, since `String(...)` would coerce numbers / objects into stringly
+  // values that pass the empty-check below but aren't real dates.
+  if (typeof dates[0] !== 'string' || typeof dates[1] !== 'string') return null;
 
   const dailyTuple: [DailyEntry, DailyEntry] = [
     {
-      date: String(dates[0] ?? ''),
+      date: dates[0],
       temperature_max_c: numOrNaN(tmax[0]),
       temperature_min_c: numOrNaN(tmin[0]),
       precipitation_sum_mm: numOrNaN(psum[0]),
       weather_code: numOrNaN(codes[0]),
     },
     {
-      date: String(dates[1] ?? ''),
+      date: dates[1],
       temperature_max_c: numOrNaN(tmax[1]),
       temperature_min_c: numOrNaN(tmin[1]),
       precipitation_sum_mm: numOrNaN(psum[1]),

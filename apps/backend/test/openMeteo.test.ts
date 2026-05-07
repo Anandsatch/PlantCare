@@ -331,6 +331,79 @@ describe('getWeather — error paths', () => {
     expect(kv.put).not.toHaveBeenCalled();
   });
 
+  it('HTTP 429 with malformed Retry-After ("0.9") → no retry_after (strict-int parse)', async () => {
+    // Codex P2: Number("0.9") → 0.9, Math.floor → 0 (immediate retry). Strict
+    // /^\d+$/ rejects decimals so the caller falls through to a sensible
+    // backoff instead of hammering upstream.
+    const kv = makeKV();
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '0.9' },
+        }),
+    );
+
+    const res = await getWeather({
+      ...LA,
+      env: asEnv(kv),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(res.kind).toBe('rate_limited');
+    if (res.kind === 'rate_limited') {
+      expect(res.retry_after).toBeUndefined();
+    }
+  });
+
+  it('HTTP 429 with hex/sci/whitespace Retry-After → no retry_after', async () => {
+    const kv = makeKV();
+    const probes = ['0x10', '1e3', '+5', '-1', ' ', '', 'abc'];
+    for (const header of probes) {
+      const fetchImpl = vi.fn(
+        async () =>
+          new Response('rate limited', {
+            status: 429,
+            headers: { 'Retry-After': header },
+          }),
+      );
+      const res = await getWeather({
+        ...LA,
+        env: asEnv(kv),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      expect(res.kind).toBe('rate_limited');
+      if (res.kind === 'rate_limited') {
+        expect(res.retry_after).toBeUndefined();
+      }
+    }
+  });
+
+  it('HTTP 429 with oversized Retry-After clamps to 1 hour', async () => {
+    // A misbehaving upstream emitting "999999999" shouldn't suggest a multi-day
+    // wait. The wrapper's own KV TTL is 1 hour, so capping there is the right
+    // ceiling.
+    const kv = makeKV();
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '999999999' },
+        }),
+    );
+
+    const res = await getWeather({
+      ...LA,
+      env: asEnv(kv),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(res.kind).toBe('rate_limited');
+    if (res.kind === 'rate_limited') {
+      expect(res.retry_after).toBe(3600);
+    }
+  });
+
   it('HTTP 429 without Retry-After → kind=rate_limited with no retry_after', async () => {
     const kv = makeKV();
     const fetchImpl = vi.fn(
@@ -405,6 +478,61 @@ describe('getWeather — error paths', () => {
     if (res.kind === 'parse_error') {
       expect(res.message).toContain('shape');
     }
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
+  it('upstream null/missing humidity → parse_error (NaN must not escape into KV)', async () => {
+    // Codex P2: numOrNaN converts missing/non-numeric upstream values to NaN,
+    // and a permissive `typeof === 'number'` guard would pass NaN through. KV
+    // would then serialize NaN as `null`, poisoning the cache. The hardened
+    // type guards now require Number.isFinite on every numeric field.
+    const kv = makeKV();
+    const broken = meteoResponse() as unknown as { current: Record<string, unknown> };
+    broken.current.relative_humidity_2m = null;
+    const fetchImpl = vi.fn(async () => jsonResponse(broken));
+
+    const res = await getWeather({
+      ...LA,
+      env: asEnv(kv),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(res.kind).toBe('parse_error');
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
+  it('upstream null daily precipitation_sum entry → parse_error', async () => {
+    // Same NaN-leak surface, but in the daily column-major arrays.
+    const kv = makeKV();
+    const broken = meteoResponse();
+    (broken.daily as { precipitation_sum: Array<number | null> }).precipitation_sum = [null, 1.2];
+    const fetchImpl = vi.fn(async () => jsonResponse(broken));
+
+    const res = await getWeather({
+      ...LA,
+      env: asEnv(kv),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(res.kind).toBe('parse_error');
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
+  it('upstream non-string daily.time entry → parse_error', async () => {
+    // Codex P2 follow-up: dates were String()-coerced, so a number would slip
+    // through. Now we require strings explicitly.
+    const kv = makeKV();
+    const broken = meteoResponse();
+    (broken.daily as { time: Array<string | number> }).time = [20260506, '2026-05-07'];
+    const fetchImpl = vi.fn(async () => jsonResponse(broken));
+
+    const res = await getWeather({
+      ...LA,
+      env: asEnv(kv),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(res.kind).toBe('parse_error');
     expect(kv.put).not.toHaveBeenCalled();
   });
 
