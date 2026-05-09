@@ -45,3 +45,11 @@ export type {
   AddNoteSavedPayload,
   AddNoteSheetProps,
 } from './AddNoteSheet';
+  EditPlantDetailsSheet,
+  HELPER_COPY as EDIT_DETAILS_HELPER_COPY,
+  MAX_INTERVAL_DAYS,
+  MIN_INTERVAL_DAYS,
+  parseIntervalInput,
+  VALIDATION_COPY as EDIT_DETAILS_VALIDATION_COPY,
+} from './EditPlantDetailsSheet';
+export type { EditPlantDetailsSheetProps } from './EditPlantDetailsSheet';
