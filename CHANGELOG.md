@@ -2,6 +2,55 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.34.0] - 2026-05-06
+
+E9-004 — `<WeeklyReviewScreen>` (A-6, Pass 7). The Sunday digest screen the `<SundayLetterCard>` (E9-003) opens to. Composes a top hero illustration, Fraunces "Last week" headline, Inter narrative paragraph from `/api/review`'s LLM payload, and a per-plant section that pairs nickname + species + a 7-day `<WateringLedger>` row (E4-003). States are mutually exclusive: loading skeleton → success | empty week ("This week was quiet — that's okay. Come back next Sunday.") | discriminated-union error variants (network / timeout / server / parse_error / layer1_reject / low_confidence) | offline-queued banner. The seven `ApiResult` kinds keep distinct copy and retry semantics — collapsing them into a single "try again" surface is rejected because user intent and copy diverge per kind (network = check your connection, server = wait, queued = no error card at all). Stacks on origin/main (E4-003 + E2-001 + api client all live there). 26 new screen tests; 379 mobile tests total (was 353).
+
+### Added
+- `apps/mobile/src/screens/WeeklyReviewScreen.tsx` — the screen. Props: `apiClient`, `weekRequest` (parent computes the `{ week_summary, plants[] }` payload from local SQLite, screen forwards it untouched), `plantsForLedgers` (per-plant nickname + species + watering events, paired by index against `weekRequest.plants` and the response's `per_plant[]`), `onDismiss` (parent owns dismiss persistence — no cloud sync of dismiss state per V1 lock), optional `nowMs` for deterministic ledger anchoring in tests. Uses `useTheme` (E2-001) + `useReduceMotion` (E2-004) for token + animation gates. Hero illustration is a "🌿" Unicode glyph at fontSize 72 inside a centered surface block with `accessibilityRole='image'` + a metaphor-naming label — mirrors the EmptyGardenWelcome.tsx scaffolding policy (no `<svg>` asset bundled at the screen layer in V1; SWAP-WHEN a real `<WeeklyReviewIllustration />` ships).
+- `apps/mobile/src/screens/__tests__/WeeklyReviewScreen.test.tsx` — 26 tests across mount-fire-once, real `<React.StrictMode>` double-mount dedupe (codex P1 fix verified), loading skeleton, success rendering (headline + narrative + per-plant blocks), empty-week editorial copy, three error variants asserting non-collapsed copy, queued banner separation, "Got it" → onDismiss, retry CTA re-fires `apiClient.review`, dark-theme token swap, two reduce-motion paths plus the boot-race fix (codex P2 verified — hook=false + OS=true ⇒ no `Animated.timing` call), four a11y assertions (hero image role, headline header role, button roles + labels, per-plant composed-stop label), AppState resume policy (settled-success NEVER re-fetches), `setAccessibilityFocus` after content lands, nickname-fallback to species_label, sub-day-precision regression (3d 12h fixture buckets onto exactly one ledger column — locks both this screen and `<WateringLedger>` against `Math.floor((now - then) / 86_400_000)` drift), idle→loading→success sequencing, defensive coercion when `apiClient.review` throws.
+
+### Discriminated union NOT collapsed (the load-bearing decision)
+Reviewers occasionally suggest "just use one generic 'try again later' string for all error kinds." REJECT. The user-visible difference matters: `network` is the user's problem to fix (turn wifi back on); `server` is ours and they should wait; `queued` shouldn't render an error card at all (renders the queued banner instead); `timeout` differs from `network` in retry semantics (the request reached the lab — retrying is more likely to succeed). The screen renders a kind-specific headline + body + retry CTA per kind via `ERROR_COPY[kind]`, with `queued` handled by a separate banner renderer. Same posture as E5-009.
+
+### Strict-mode double-mount (codex P1 catch + fix)
+First implementation used a per-instance `dispatchedRef` latch (the E5-008 / E5-010 pattern). Codex correctly flagged that React 18+ Strict Mode mounts → unmounts → mounts again with a fresh component instance — which gives each mount a fresh ref tree. The latch alone wouldn't prevent double-fire across the StrictMode cycle. Fix: layer a module-scoped `inFlightDispatches` Map (key = `JSON.stringify(weekRequest)`) on top of the per-instance ref. The first mount registers its in-flight Promise in the Map; the second mount sees the same key, awaits the same Promise, and skips a duplicate dispatch. The Map clears on resolution via `.finally()`. The retry path explicitly bypasses the Map so a stale failure doesn't get re-served. The test now wraps in real `<React.StrictMode>` and asserts `apiClient.review` fires exactly once.
+
+### Reduce-motion boot race (codex P2 catch + fix)
+`useReduceMotion()` returns `false` during a brief boot async window before `AccessibilityInfo.isReduceMotionEnabled()` resolves. If the success response lands inside that window on a real reduce-motion device, the hook value alone would let `Animated.timing` start on a user who asked for none. Fix: at the loading→success edge, when the hook says false, do a synchronous `AccessibilityInfo.isReduceMotionEnabled()` probe before starting the animation. If the OS reports true, skip `timing` and snap the value to its end state. The test "reduce-motion boot race" pins this contract: `mockedReduceMotion=false` + `isReduceMotionEnabled.mockResolvedValue(true)` ⇒ zero `Animated.timing` calls. The `Animated.Value` itself initializes at end-state (1.0) per the Wave 1 lesson, so even if the probe fails (catch path), the rendered surface is correct.
+
+### AppState resume — DON'T re-fetch on settled success
+The `AppState` listener is wired but is a deliberate no-op. A user pausing on the Sunday letter and returning should not see a refresh-blank-reload. The only re-fetch triggers are first-mount dispatch (cached) and explicit retry tap. A test fires `'background' → 'active'` cycles and asserts `apiClient.review` is NOT called a second time. Future post-V1 hooks (telemetry, post-error retry-on-resume) can hang off the same listener without contract churn.
+
+### Accessibility
+- Hero block: `accessibilityRole='image'` + a label that names the metaphor ("A leaf — your weekly garden letter").
+- Headline: `accessibilityRole='header'`.
+- Per-plant section: each plant is a single VoiceOver/TalkBack stop via `accessible={true}` + composed label `"{nickname}, {species_label}"`. RN doesn't expose a `'group'` role so we use the `accessible` collapse pattern that `<WateringLedger>` already uses for each column. Same posture; same outcome to assistive tech.
+- "Got it" + "Try again" CTAs: `accessibilityRole='button'` + a label.
+- `AccessibilityInfo.setAccessibilityFocus()` moves focus to the headline once content lands, so VoiceOver doesn't strand on a skeleton element that just unmounted. Same pattern as E5-010.
+- Error banner: `accessibilityLiveRegion='polite'` so the error transition announces on Android.
+
+### V1 scope locks (rejected reviewer suggestions)
+- No `date-fns` / `dayjs` / `luxon` / `Temporal`. The screen does no time math itself; the ledger handles bucketing.
+- No collapsing of the API discriminated union — see above.
+- No cloud sync of dismiss state. Parent owns persistence (SQLite or AsyncStorage); the screen fires `onDismiss()` and stops there.
+- No new deps. RN + react + `@plantcare/api-types` + `@plantcare/theme` only.
+- No backend changes — `/api/review` is shipped via E9-001.
+- No SVG hero illustration in this PR — emoji-fallback policy mirrors EmptyGardenWelcome's scaffolding choice; SWAP-WHEN a real asset is available.
+- No re-fetch on AppState resume — explicitly tested as a no-op.
+- No Maestro flow in this PR — owned by E12-008 (Sunday weekly review E2E).
+
+### Token verification
+Every used token is in `@plantcare/theme.colors`: `bg`, `surface`, `text`, `textMuted`, `primary`, `stroke`, `tan`. The error/queued banners use `surface` for fill + `tan` for the hairline border (the Conservatory accent color used elsewhere for "check soil" and "syncing" states; `theme.warn` does not exist — Wave 1 lesson — `tan` is the closest accent for editorial-warm warnings). Dark-mode swap is automatic via `useTheme()` (passes 5.57:1 on the Midnight forest bg per DESIGN.md).
+
+### Adversarial review (codex)
+- Pass 1 — codex flagged P1 (per-instance latch insufficient for real StrictMode) + P2 (reduce-motion boot race). Both addressed; tests added. See sections above.
+- Pass 2 — codex on the corrected diff returned `NO P1/P2 findings`.
+
+### Notes
+- The `/api/review` response carries `per_plant[]` ordered to match the request's `plants[]`. The screen pairs them by index against `plantsForLedgers` (parent-supplied). If the response array is shorter (a model that emitted fewer observations than plants), missing entries simply don't render an observation line — the ledger row still renders.
+- Test count: 379 mobile (was 353) + 148 backend = 527 across the workspace.
+
 ## [0.1.32.0] - 2026-05-05
 
 E9-003 — `<SundayLetterCard>` is the editorial "Sunday letter" card that surfaces above the Plants list (A-1) on Sundays or after a 7+ day care drought. Pass 7 (Weekly Letter) per the master plan: a postcard, not a notification — gentle invitation into the weekly review (E9-004 / WeeklyReviewScreen) rather than a red-dot reminder. Compact card with a Fraunces "Sunday letter" headline, an Inter narrative body, a forest "Read this week" CTA → `onOpen()`, and an Inter "Dismiss" CTA → `onDismiss()`. The component owns no SQLite state — the parent screen reads `lastReviewedAtMs` and `dismissedAtMs` from the local DB and passes them as props.
