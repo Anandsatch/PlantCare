@@ -14,3 +14,12 @@ enabled = true
 # [[kv_namespaces]]
 # binding = "BUDGET"
 # id = "<id from `wrangler kv namespace create BUDGET`>"
+
+# E6-001 — Weather cache for Open-Meteo wrapper. 1-hour TTL keyed on lat/lon
+# (2-decimal precision ≈ 1.1km grid). The id below is the placeholder bound
+# in vitest-pool-workers' miniflare environment; the real id gets swapped in
+# during deploy via `wrangler kv namespace create WEATHER_CACHE` and pasted
+# here before the next prod ship.
+[[kv_namespaces]]
+binding = "WEATHER_CACHE"
+id = "weather_cache_placeholder"
