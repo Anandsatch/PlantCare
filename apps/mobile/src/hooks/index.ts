@@ -18,3 +18,10 @@ export {
   type UseIdentifyRequestConfig,
   type UseIdentifyRequestReturn,
 } from './useIdentifyRequest';
+  useConsultRequest,
+  type ConsultInput,
+  type ConsultPlantContext,
+  type ConsultStatus,
+  type UseConsultRequestConfig,
+  type UseConsultRequestReturn,
+} from './useConsultRequest';
