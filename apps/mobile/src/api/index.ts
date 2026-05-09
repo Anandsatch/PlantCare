@@ -26,4 +26,6 @@ export {
   type ImageInput,
   type ReviewRequest,
   type ReviewResponse,
+  type WeatherRequest,
+  type WeatherResponse,
 } from './types';

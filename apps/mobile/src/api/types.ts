@@ -36,6 +36,7 @@ import type {
   IdentifyResponse,
   ReviewRequestBody,
   ReviewResponse,
+  WeatherResponse,
 } from '@plantcare/api-types';
 
 /**
@@ -141,6 +142,20 @@ export type ConsultRequest = ConsultRequestBody;
 export type ReviewRequest = ReviewRequestBody;
 
 /**
+ * Weather: lat/lon query for a 2-day forecast (E6-002). The wire path is
+ * GET `/api/weather?lat=&lon=` — no body. Defined as a request shape
+ * (rather than two positional args on the client method) so a future
+ * scope-locked addition (e.g. requested-units flag) doesn't break the
+ * call site.
+ */
+export type WeatherRequest = {
+  /** Decimal latitude, range [-90, 90]. */
+  latitude: number;
+  /** Decimal longitude, range [-180, 180]. */
+  longitude: number;
+};
+
+/**
  * Image input accepted by `identify` / `diagnose`. Browser/test runners
  * provide a `Blob` (or its `File` subclass); RN provides the URI shape.
  *
@@ -161,4 +176,5 @@ export type {
   DiagnoseResponse,
   IdentifyResponse,
   ReviewResponse,
+  WeatherResponse,
 };
