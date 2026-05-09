@@ -53,3 +53,5 @@ export type {
   VALIDATION_COPY as EDIT_DETAILS_VALIDATION_COPY,
 } from './EditPlantDetailsSheet';
 export type { EditPlantDetailsSheetProps } from './EditPlantDetailsSheet';
+export { QueueRetryBanner, QUEUE_RETRY_BANNER_COPY } from './QueueRetryBanner';
+export type { QueueRetryBannerProps } from './QueueRetryBanner';

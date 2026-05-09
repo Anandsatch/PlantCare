@@ -52,6 +52,13 @@ export type ToastBannerType = 'warn' | 'info' | 'pending';
 export type ToastBannerAction = {
   readonly label: string;
   readonly onPress: () => void;
+  /**
+   * When true, the CTA is rendered with `accessibilityState={{ disabled: true }}`,
+   * the `disabled` prop on the `Pressable`, and a non-pressable visual hint.
+   * Used by E7-006's QueueRetryBanner to surface a "Retrying…" busy state
+   * that screen readers announce as a disabled button. Default false.
+   */
+  readonly disabled?: boolean;
 };
 
 export type ToastBannerProps = {
@@ -282,9 +289,11 @@ export function ToastBanner(props: ToastBannerProps) {
       </Text>
       {action ? (
         <Pressable
-          onPress={action.onPress}
+          onPress={action.disabled ? undefined : action.onPress}
+          disabled={action.disabled}
           accessibilityRole="button"
           accessibilityLabel={action.label}
+          accessibilityState={action.disabled ? { disabled: true } : undefined}
           hitSlop={8}
           style={styles.action}
         >
