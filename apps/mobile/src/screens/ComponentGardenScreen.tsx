@@ -39,6 +39,7 @@ import {
   EditorialBottomSheet,
   EditorialButton,
   FAB,
+  FABPopover,
   HandOnSoilIcon,
   HeroPhoto,
   LeafIcon,
@@ -141,6 +142,27 @@ export const PRIMITIVE_SECTIONS: ReadonlyArray<GardenSection> = [
         <FAB onPress={noop} />
         <FAB onPress={noop} onLongPress={noop} />
       </Row>
+    ),
+  },
+  {
+    name: 'FABPopover',
+    importPath: '@/components/primitives',
+    category: 'primitive',
+    // The popover renders full-screen via Modal; the garden previews the
+    // closed shell so the manifest row is testable without portal
+    // interference. Real visual QA happens via PlantsListScreen.
+    render: () => (
+      <View>
+        <Text style={styles.placeholderNote}>
+          FAB popover rendered closed in the garden — visual QA via Plants list.
+        </Text>
+        <FABPopover
+          open={false}
+          onDismiss={noop}
+          onAddPlant={noop}
+          onQuickDiagnose={noop}
+        />
+      </View>
     ),
   },
   {

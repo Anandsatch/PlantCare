@@ -34,6 +34,7 @@ import {
   EditorialBottomSheet,
   EditorialButton,
   FAB,
+  FABPopover,
   HandOnSoilIcon,
   HeroPhoto,
   LeafIcon,
@@ -244,6 +245,7 @@ describe('PRIMITIVE_SECTIONS — dark-mode coverage parity', () => {
     'StatusChip',
     'EditorialButton',
     'FAB',
+    'FABPopover',
     'HeroPhoto',
     'EditorialBottomSheet',
     'ToastBanner',
@@ -420,6 +422,38 @@ describe('FAB — dark-mode rendering', () => {
     const r = ThemedRender(darkTheme, <FAB onPress={noop} />);
     // FAB bg = text token = cream in dark; glyph color = surface = forest.
     expectTextContrast(r, darkTheme.colors.text);
+  });
+});
+
+describe('FABPopover — dark-mode rendering', () => {
+  const noop = () => undefined;
+  it('open=false renders nothing in either theme (no color leakage)', () => {
+    const rl = ThemedRender(
+      lightTheme,
+      <FABPopover open={false} onDismiss={noop} onAddPlant={noop} onQuickDiagnose={noop} />,
+    );
+    const rd = ThemedRender(
+      darkTheme,
+      <FABPopover open={false} onDismiss={noop} onAddPlant={noop} onQuickDiagnose={noop} />,
+    );
+    expect(toTree(rl)).toEqual([]);
+    expect(toTree(rd)).toEqual([]);
+  });
+  it('open=true: menu surface swaps between themes', () => {
+    const rl = ThemedRender(
+      lightTheme,
+      <FABPopover open onDismiss={noop} onAddPlant={noop} onQuickDiagnose={noop} />,
+    );
+    const rd = ThemedRender(
+      darkTheme,
+      <FABPopover open onDismiss={noop} onAddPlant={noop} onQuickDiagnose={noop} />,
+    );
+    const colorsL = collectColorStrings(rl);
+    const colorsD = collectColorStrings(rd);
+    expect(colorsL).toContain(lightTheme.colors.surface);
+    expect(colorsD).toContain(darkTheme.colors.surface);
+    expectNoForbiddenColors(rl);
+    expectNoForbiddenColors(rd);
   });
 });
 

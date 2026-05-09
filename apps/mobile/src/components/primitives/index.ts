@@ -12,6 +12,7 @@ export { StatusChip } from './StatusChip';
 export type { StatusChipProps } from './StatusChip';
 export { EditorialButton, type EditorialButtonProps } from './EditorialButton';
 export { FAB, type FABProps } from './FAB';
+export { FABPopover, fabPopoverStyles, type FABPopoverProps } from './FABPopover';
 export { HeroPhoto, type HeroPhotoProps } from './HeroPhoto';
 export {
   EditorialBottomSheet,
