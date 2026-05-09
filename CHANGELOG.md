@@ -2,6 +2,36 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.48.0] - 2026-05-08
+
+E10-001 — dark-mode rendering verification across every primitive in the Component Garden manifest, plus the one primitive fix the verification surfaced. Stacks on E2-013 (PR #32, the Component Garden screen) and treats that screen's manifest as the coverage anchor: every entry in `PRIMITIVE_SECTIONS` now has a corresponding dark-mode test that renders the primitive twice via `<ForcedTheme>` (once with `lightTheme`, once with `darkTheme`) and asserts three structural invariants — token-driven background swaps between schemes, no color resolves to a forbidden fallback (`undefined` / `null` / empty string / `NaN`), and text-on-bg passes the WCAG-AA 4.5:1 contrast floor in BOTH themes. The contrast helper is inline (~30 lines of WCAG 2.1 relative-luminance math) rather than pulled in as a library — V1 scope lock against new deps holds. Sanity assertions on the helper itself anchor it against the known Conservatory/Midnight `text` × `bg` ratios from DESIGN.md (~13.32:1 and ~16.55:1 respectively) so a regression in the helper fails loudly before any primitive assertion runs.
+
+The verification surfaced one real bug in `ToastBanner`. The banner uses `theme.colors.tan` / `theme.colors.sage` for its background — both intentionally constant across Conservatory and Midnight per the DESIGN.md "Status icon system" lock — but the message text was reading `theme.colors.text`, which inverts to cream (`#FAF6EE`) in dark mode. Cream-on-tan computes to 2.09:1; cream-on-sage to 1.68:1. Both are well under the 4.5:1 AA floor and would have shipped as a real legibility failure for any user who flipped their phone into dark mode. The fix locks the on-accent text color to a fixed deep ink (`#2A2A2A`) — the same value as `lightColors.text` — for both message and action labels. Light-mode ratios stay green at 6.38:1 (tan) and 7.91:1 (sage); dark-mode ratios now match (tan/sage are constants, so the ink-on-warm-paper relationship is identical in both schemes). No new "onAccent" token was introduced into the theme tables — V1 token tables are locked per DESIGN.md and the master plan, and this is a localized override on a primitive that has the only text-on-warm-accent surface in the system.
+
+### Added
+- `apps/mobile/src/screens/__tests__/ComponentGardenScreen.dark.test.tsx` — 30 tests across 12 describe blocks. Three contrast-helper sanity assertions (Conservatory text-on-bg ~13.32:1, Midnight text-on-bg ~16.55:1, invalid hex returns null), one manifest-parity assertion (the dark suite must enumerate every `PRIMITIVE_SECTIONS` entry — fails when a future primitive ships without a dark-mode test), and one block per primitive (Droplet, LeafIcon, HandOnSoilIcon, StatusChip, EditorialButton, FAB, HeroPhoto, EditorialBottomSheet, ToastBanner). Each block exercises its primitive's full variant set: StatusChip in all three types (water/skip/soil), EditorialButton in both variants (filled/outline), ToastBanner in all three types (warn/info/pending), EditorialBottomSheet in both open and closed states. The shared helpers `collectColorStrings`, `findFirstBg`, `findFirstTextColor`, and `unpackToHex` walk the JSON test-tree; `unpackToHex` is load-bearing because react-native-svg packs Path fill/stroke as `{ type: 0, payload: 0xFFRRGGBB >>> 0 }` objects rather than hex strings — without unpacking, the SVG-fill swap assertions for Droplet/LeafIcon/HandOnSoilIcon would silently pass against an empty array.
+- `apps/mobile/src/components/primitives/__tests__/ToastBanner.test.tsx` — 2 new regression tests (E10-001 callouts in the test names) pinning the message-color and action-label-color contracts to `#2A2A2A` in both themes. These guard against a future refactor that "fixes" the apparent inconsistency by re-introducing `theme.colors.text` and silently regressing dark-mode contrast.
+
+### Changed
+- `apps/mobile/src/components/primitives/ToastBanner.tsx` — message text and action-button label now use a module-local `ON_ACCENT_INK = '#2A2A2A'` constant instead of `theme.colors.text`. The constant is documented inline with the contrast math (cream-on-tan = 2.09:1, ink-on-tan = 6.38:1) and a pointer to the DESIGN.md "Status icon system" lock that makes tan/sage theme-invariant. No other theme token usages changed — `bannerColor()` still reads `theme.colors.tan` / `theme.colors.sage` so a future palette adjustment to either accent threads through automatically.
+
+### Verification
+- Mobile: 423 tests across 28 suites (was 391 across 27 — +32 tests, +1 suite). Typecheck clean.
+- Backend: 148 tests across 8 suites (unchanged from E2-013 baseline).
+- Total workspace: 571 tests (was 539; +32 from this PR).
+
+### Adversarial review (codex + Claude subagent)
+- **P1 (addressed)** — the verification itself surfaced the ToastBanner dark-mode contrast bug: `theme.colors.text` on tan/sage in dark mode = 1.68:1, well below WCAG-AA. Resolution: locked text-on-accent to `#2A2A2A` in `ToastBanner.tsx` + added regression tests in both `ToastBanner.test.tsx` and the new dark suite. Finding it confirms the test surface works.
+- **P2 (addressed)** — the test walker initially crashed on Text leaves (raw strings in the JSON tree have no `props`). Resolution: `walk()` now guards with `if (!n || typeof n !== 'object' || !n.props) continue` so the walker stays robust against future RN renderer changes that may emit string children differently.
+- **P2 (addressed)** — first draft of HandOnSoilIcon's swap test rendered LeafIcon by accident (copy-paste). Resolution: caught and corrected before ship.
+- **No P1s beyond the ToastBanner regression.** Token verification: every `theme.colors.*` access in the new test file references a real `ColorTokens` field. No assumed `theme.warn` (V1 token table holds). The `ForcedTheme` composition pattern matches E2-013's prior choice — the master plan's V1 scope lock against a global `<ThemeProvider>` is preserved.
+
+### V1 scope locks (rejected reviewer suggestions)
+- No `react-native-a11y` or `wcag-contrast` dependency. Inline luminance math (~30 lines) is sufficient and keeps the workspace dep tree at the V1 lock.
+- No image-snapshot runner. V1 is structural-only per the master plan GSTACK REVIEW REPORT footer; pixel comparison is post-V1.
+- No new theme token (no `colors.onAccent` etc.). The localized `ON_ACCENT_INK` constant lives inside `ToastBanner.tsx` because that primitive is the only text-on-warm-accent surface in V1; introducing a system-wide token would require a DESIGN.md amendment we haven't budgeted.
+- No global `<ThemeProvider>` at the app root. `<ForcedTheme>` (the existing E2-013 shim) is the only theme-override surface; production code still falls through to `useColorScheme()`.
+
 ## [0.1.44.0] - 2026-05-08
 
 E3-003 — `<PlantsListScreen>` is the A-1 Garden Home that composes the E3 epic's pieces into one screen: `<EmptyGardenWelcome>` (E3-002, in main) for the Day-1 zero-plant card, `<PlantCard>` (E3-001, this stack's base) for each row, and `<FAB>` (E2-009, in main) for the bottom-right "+". Status is pre-computed at the SCREEN layer via a single `MAX(watered_at) GROUP BY plant_id` query against `idx_water_plant_date`, then routed through the pure `computeWateringStatus` per plant — one SQL round-trip, N pure decisions, no per-card hooks (the contract `<PlantCard>` already shipped against in E3-001). 30 screen tests, 410 mobile tests total (was 380 on E3-001's stack base). Stacks on `Anandsatch/e3-plantcard` (PR #31).
@@ -609,6 +639,7 @@ Two P2 findings — both addressed before ship:
 - **EditorialBottomSheet rendered closed in the garden:** the bottom sheet uses RN's `<Modal>` internally, which renders into a separate native container and can't be visually composed inside a `<ScrollView>`. The garden surfaces a placeholder note explaining this; real visual QA happens in E8-003 when `<AddNoteSheet>` lands as the primary consumer.
 - **CameraPermissionPrePrompt rendered with a placeholder note:** the pre-prompt's state machine depends on `expo-camera`'s `useCameraPermissions()` hook, which can't be exercised in a static garden render without triggering the OS permission prompt. The garden test mocks the hook so the smoke render passes; real visual QA happens in E5-003's dev-build run.
 
+<<<<<<< HEAD
 =======
 >>>>>>> origin/Anandsatch/e6-weather-endpoint
 =======
@@ -617,6 +648,8 @@ Two P2 findings — both addressed before ship:
 >>>>>>> origin/Anandsatch/e7-sync-drainer
 =======
 >>>>>>> origin/Anandsatch/e3-plants-list
+=======
+>>>>>>> origin/Anandsatch/e10-dark-primitives
 ## [0.1.26.0] - 2026-05-04
 
 E5-004 — `<CameraView>` wraps `expo-camera` with permission-gated rendering (composes `CameraPermissionPrePrompt` from E5-003), a top mode-toggle pill (identify / diagnose), and a bottom shutter button. The mode prop discriminates downstream behavior in E5-008 (`CameraResultScreen`) and E5-010 (`AddPlantScreen`). Stacks on `Anandsatch/e5-camera-pre-prompt` (PR #18); auto-rebases to main when E5-003 lands. The wrapper is exported as `PlantCareCameraView` from `apps/mobile/src/components/CameraView.tsx` because `expo-camera` already exports a class component named `CameraView` from its modern API — the file name keeps symmetry with the master-plan spec, the export name avoids the import collision.
