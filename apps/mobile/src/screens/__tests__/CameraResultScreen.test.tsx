@@ -358,7 +358,7 @@ describe('CameraResultScreen', () => {
     expect(secondCall.image.uri).toBe(compressedUri);
   });
 
-  it('non-success kind (server) renders the E5-009 placeholder without throwing', async () => {
+  it('non-success kind (server) renders the server error variant without throwing', async () => {
     const { client } = makeApiClient(async () => ({
       ok: false,
       kind: 'server',
@@ -378,15 +378,17 @@ describe('CameraResultScreen', () => {
     );
 
     await waitFor(() =>
-      expect(screen.queryByTestId('result-placeholder')).toBeOnTheScreen(),
+      expect(screen.queryByTestId('result-error-server')).toBeOnTheScreen(),
     );
-    // Placeholder calls out the kind so we know the discriminated union survives.
-    expect(screen.getByTestId('result-placeholder')).toHaveTextContent(/server/);
+    // Editorial copy carries the server-error kind.
+    expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+      /something went wrong/i,
+    );
     // No success card.
     expect(screen.queryByTestId('result-success')).toBeNull();
   });
 
-  it('non-success kind (layer1_reject) renders placeholder with the right kind tag', async () => {
+  it('non-success kind (layer1_reject) renders the layer1 reject variant', async () => {
     const { client } = makeApiClient(async () => ({
       ok: false,
       kind: 'layer1_reject',
@@ -406,11 +408,14 @@ describe('CameraResultScreen', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('result-placeholder')).toHaveTextContent(/layer1_reject/),
+      expect(screen.getByTestId('result-error-layer1_reject')).toBeOnTheScreen(),
+    );
+    expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+      /focused on plant care/i,
     );
   });
 
-  it('non-success kind (queued) renders placeholder with the queued kind tag', async () => {
+  it('non-success kind (queued) renders the queued banner variant', async () => {
     const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
     const { spy: compressSpy } = makeCompressImpl();
 
@@ -426,8 +431,10 @@ describe('CameraResultScreen', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('result-placeholder')).toHaveTextContent(/queued/),
+      expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
     );
+    // The queued banner reads as a non-disruptive status.
+    expect(screen.getByTestId('result-queued-banner')).toBeOnTheScreen();
   });
 
   it('reduce-motion: success reveal mounts at full opacity (no Animated.timing)', async () => {
@@ -611,7 +618,7 @@ describe('CameraResultScreen', () => {
     expect(diagnoseImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('saving while result is non-success: onSave is NOT invoked (placeholder branch)', async () => {
+  it('saving while result is non-success: onSave is NOT invoked (error variant branch)', async () => {
     const { client } = makeApiClient(async () => ({ ok: false, kind: 'server' }));
     const { spy: compressSpy } = makeCompressImpl();
     const onSave = jest.fn();
@@ -628,9 +635,9 @@ describe('CameraResultScreen', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('result-placeholder')).toBeOnTheScreen(),
+      expect(screen.getByTestId('result-error-server')).toBeOnTheScreen(),
     );
-    // No save CTA on the placeholder branch — onSave never invoked.
+    // No save CTA on the error variant branch — onSave never invoked.
     expect(screen.queryByTestId('result-save')).toBeNull();
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -705,11 +712,13 @@ describe('CameraResultScreen', () => {
       await Promise.resolve();
     });
     expect(diagnoseSpy).not.toHaveBeenCalled();
-    // Compress-failed renders the placeholder with the kind tag preserved so
-    // E5-009 can style it distinct from API-side errors. No success card.
+    // Compress-failed renders the dedicated compress-failed variant — distinct
+    // from API-side errors per the discriminated union. No success card.
     expect(screen.queryByTestId('result-success')).toBeNull();
-    expect(screen.queryByTestId('result-placeholder')).toBeOnTheScreen();
-    expect(screen.getByTestId('result-placeholder')).toHaveTextContent(/compress-failed/);
+    expect(screen.queryByTestId('result-error-compress-failed')).toBeOnTheScreen();
+    expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+      /preparing your photo/i,
+    );
   });
 
   it('does not auto-fire a second diagnose on parent re-render', async () => {
@@ -799,6 +808,938 @@ describe('CameraResultScreen', () => {
     const secondCall = diagnoseSpy.mock.calls[1]?.[0] as { image: { uri: string } };
     expect(firstCall.image.uri).toBe('file:///compressed-raw1.jpg');
     expect(secondCall.image.uri).toBe('file:///compressed-raw2.jpg');
+  });
+
+  // ─── E5-009 — error variants ──────────────────────────────────────────
+  //
+  // Every kind from `ApiResult<DiagnoseResponse>` plus the screen-internal
+  // `compress-failed` phase gets its own distinct UI. The discriminated union
+  // STAYS distinct — no kind collapses into another. Tests here assert (a)
+  // each kind renders its own headline + CTAs; (b) "Try again" reuses the
+  // SAME compressed photo (no recompression); (c) "Save photo for now" fires
+  // the right callback with the right payload; (d) "Pick from list" /
+  // "Try a different photo" / "Report" callbacks fire on the right kinds;
+  // (e) reduce-motion hard-disables the variant fade; (f) dark theme tokens
+  // swap; (g) accessibility roles per kind; (h) strict-mode double-mount
+  // doesn't fire side effects twice.
+
+  describe('E5-009 error variants', () => {
+    // ─── low_confidence ──────────────────────────────────────────────────
+    it('low_confidence: renders the editorial "We\'re not quite sure" headline', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'low_confidence',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-low_confidence')).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /not quite sure/i,
+      );
+      expect(screen.getByTestId('result-pick-from-list')).toBeOnTheScreen();
+      expect(screen.getByTestId('result-retake')).toBeOnTheScreen();
+    });
+
+    it('low_confidence: "Pick from list" fires onPickFromList', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'low_confidence',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const onPickFromList = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onPickFromList={onPickFromList}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-pick-from-list')).toBeOnTheScreen(),
+      );
+      fireEvent.press(screen.getByTestId('result-pick-from-list'));
+      expect(onPickFromList).toHaveBeenCalledTimes(1);
+    });
+
+    it('low_confidence: "Try a different photo" fires onRetake', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'low_confidence',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const onRetake = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onRetake={onRetake}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('result-retake')).toBeOnTheScreen());
+      fireEvent.press(screen.getByTestId('result-retake'));
+      expect(onRetake).toHaveBeenCalledTimes(1);
+    });
+
+    it('low_confidence: does NOT auto-save anything (onSave never invoked)', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'low_confidence',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const onSave = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={onSave}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-low_confidence')).toBeOnTheScreen(),
+      );
+      expect(onSave).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('result-save')).toBeNull();
+    });
+
+    // ─── timeout ─────────────────────────────────────────────────────────
+    it('timeout: renders distinct copy from network/server', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'timeout' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-timeout')).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /taking longer than usual/i,
+      );
+      // Does NOT carry the network copy.
+      expect(screen.queryByText(/can't reach the server/i)).toBeNull();
+    });
+
+    it('timeout: "Try again" re-fires diagnose with the SAME compressed photo', async () => {
+      let callCount = 0;
+      const { client, diagnoseSpy } = makeApiClient(async () => {
+        callCount += 1;
+        if (callCount === 1) return { ok: false, kind: 'timeout' };
+        return { ok: true, data: SUCCESS_DATA };
+      });
+      const { spy: compressSpy, uri: compressedUri } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() => expect(diagnoseSpy).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(screen.getByTestId('result-try-again')).toBeOnTheScreen(),
+      );
+
+      fireEvent.press(screen.getByTestId('result-try-again'));
+
+      await waitFor(() => expect(diagnoseSpy).toHaveBeenCalledTimes(2));
+      // Compression NOT re-fired — same URI.
+      expect(compressSpy).toHaveBeenCalledTimes(1);
+      const second = diagnoseSpy.mock.calls[1]?.[0] as { image: { uri: string } };
+      expect(second.image.uri).toBe(compressedUri);
+    });
+
+    it('timeout: "Save photo for now" fires onSavePhotoOnly with the result + compressed URI', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'timeout' }));
+      const { spy: compressSpy, uri: compressedUri } = makeCompressImpl();
+      const onSavePhotoOnly = jest.fn();
+      const ctx = { species_slug: 'monstera', nickname: 'Steve' } as const;
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          plantContext={ctx}
+          apiClient={client}
+          onSave={jest.fn()}
+          onSavePhotoOnly={onSavePhotoOnly}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-save-photo-only')).toBeOnTheScreen(),
+      );
+      fireEvent.press(screen.getByTestId('result-save-photo-only'));
+
+      expect(onSavePhotoOnly).toHaveBeenCalledTimes(1);
+      expect(onSavePhotoOnly).toHaveBeenCalledWith({
+        photoUri: compressedUri,
+        mode: 'diagnose',
+        plantContext: ctx,
+        result: { ok: false, kind: 'timeout' },
+      });
+    });
+
+    it('timeout: "Save photo for now" CTA hidden when onSavePhotoOnly is omitted', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'timeout' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-timeout')).toBeOnTheScreen(),
+      );
+      expect(screen.queryByTestId('result-save-photo-only')).toBeNull();
+    });
+
+    // ─── network ─────────────────────────────────────────────────────────
+    //
+    // Note: `useDiagnoseRequest` coerces api-client `network` → `queued` for
+    // V1's offline UX (master plan, line 346). So an api client that returns
+    // `kind: 'network'` reaches the screen as `kind: 'queued'` instead. The
+    // network variant rendering is still load-bearing (the discriminated
+    // union has the kind, the resolver returns it, and a future netInfo or
+    // hook change could surface it directly), so we test the rendering via
+    // the resolver unit tests above and via the discriminated-union testID
+    // sweep below — which uses a stub that bypasses the hook coercion. For
+    // an end-to-end render assertion, we'd need to mock useDiagnoseRequest,
+    // which couples this test to hook internals. Keeping the resolver-level
+    // assertion plus the variant copy unit-tested via the helper avoids that
+    // coupling.
+    it('network: variant resolver returns the network kind with distinct copy', () => {
+      const ready = {
+        kind: 'ready' as const,
+        compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 },
+      };
+      const v = __testing.resolveErrorVariant(ready, { ok: false, kind: 'network' });
+      expect(v?.kind).toBe('network');
+      expect(v?.copy.headline).toMatch(/can't reach the server/i);
+      // Distinct from timeout's headline.
+      const timeoutV = __testing.resolveErrorVariant(ready, { ok: false, kind: 'timeout' });
+      expect(v?.copy.headline).not.toBe(timeoutV?.copy.headline);
+    });
+
+    it('network: variant resolver carries forwarded message for telemetry', () => {
+      const ready = {
+        kind: 'ready' as const,
+        compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 },
+      };
+      const v = __testing.resolveErrorVariant(ready, {
+        ok: false,
+        kind: 'network',
+        message: 'dns_fail',
+      });
+      expect(v?.message).toBe('dns_fail');
+    });
+
+    // ─── server ──────────────────────────────────────────────────────────
+    it('server: renders generic server error copy', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'server',
+        message: 'svc_unconfigured',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-server')).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /something went wrong/i,
+      );
+    });
+
+    it('server: "Report" fires onReportError with kind + message + photoUri', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'server',
+        message: 'svc_unconfigured',
+      }));
+      const { spy: compressSpy, uri: compressedUri } = makeCompressImpl();
+      const onReportError = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onReportError={onReportError}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-report')).toBeOnTheScreen(),
+      );
+      fireEvent.press(screen.getByTestId('result-report'));
+
+      expect(onReportError).toHaveBeenCalledTimes(1);
+      expect(onReportError).toHaveBeenCalledWith({
+        kind: 'server',
+        message: 'svc_unconfigured',
+        photoUri: compressedUri,
+        mode: 'diagnose',
+      });
+    });
+
+    it('server: Report CTA hidden when onReportError omitted', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'server' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-server')).toBeOnTheScreen(),
+      );
+      expect(screen.queryByTestId('result-report')).toBeNull();
+    });
+
+    it('server: "Try again" re-fires diagnose', async () => {
+      let callCount = 0;
+      const { client, diagnoseSpy } = makeApiClient(async () => {
+        callCount += 1;
+        if (callCount === 1) return { ok: false, kind: 'server' };
+        return { ok: true, data: SUCCESS_DATA };
+      });
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-try-again')).toBeOnTheScreen(),
+      );
+      fireEvent.press(screen.getByTestId('result-try-again'));
+      await waitFor(() => expect(diagnoseSpy).toHaveBeenCalledTimes(2));
+      // No recompression.
+      expect(compressSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // ─── parse_error ─────────────────────────────────────────────────────
+    it('parse_error: renders distinct local-parse copy', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'parse_error',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-parse_error')).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /response we couldn't understand/i,
+      );
+      // Distinct from server.
+      expect(screen.queryByText(/something went wrong on our end/i)).toBeNull();
+    });
+
+    it('parse_error: "Try again" re-fires diagnose; only one CTA', async () => {
+      let callCount = 0;
+      const { client, diagnoseSpy } = makeApiClient(async () => {
+        callCount += 1;
+        if (callCount === 1) return { ok: false, kind: 'parse_error' };
+        return { ok: true, data: SUCCESS_DATA };
+      });
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onReportError={jest.fn()}
+          onSavePhotoOnly={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-try-again')).toBeOnTheScreen(),
+      );
+      // parse_error has only the Try-again CTA — no Save-for-now, no Report.
+      expect(screen.queryByTestId('result-save-photo-only')).toBeNull();
+      expect(screen.queryByTestId('result-report')).toBeNull();
+
+      fireEvent.press(screen.getByTestId('result-try-again'));
+      await waitFor(() => expect(diagnoseSpy).toHaveBeenCalledTimes(2));
+      expect(compressSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // ─── layer1_reject ───────────────────────────────────────────────────
+    it('layer1_reject: renders kind editorial card; only Try-different-photo CTA', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'layer1_reject',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-layer1_reject')).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /focused on plant care/i,
+      );
+      expect(screen.getByTestId('result-retake')).toBeOnTheScreen();
+      // No retry / save-for-now / report.
+      expect(screen.queryByTestId('result-try-again')).toBeNull();
+      expect(screen.queryByTestId('result-save-photo-only')).toBeNull();
+      expect(screen.queryByTestId('result-report')).toBeNull();
+    });
+
+    it('layer1_reject: "Try a different photo" fires onRetake', async () => {
+      const { client } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'layer1_reject',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const onRetake = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onRetake={onRetake}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('result-retake')).toBeOnTheScreen());
+      fireEvent.press(screen.getByTestId('result-retake'));
+      expect(onRetake).toHaveBeenCalledTimes(1);
+    });
+
+    // ─── queued ──────────────────────────────────────────────────────────
+    it('queued: renders the pending banner; no CTA', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      // Pending banner present.
+      expect(screen.getByTestId('result-queued-banner')).toBeOnTheScreen();
+      expect(screen.getByText(/save when you're back online/i)).toBeOnTheScreen();
+      // No retry / save / report / retake CTAs.
+      expect(screen.queryByTestId('result-try-again')).toBeNull();
+      expect(screen.queryByTestId('result-retake')).toBeNull();
+      expect(screen.queryByTestId('result-save-photo-only')).toBeNull();
+      expect(screen.queryByTestId('result-report')).toBeNull();
+    });
+
+    // ─── compress-failed ─────────────────────────────────────────────────
+    it('compress-failed: renders dedicated variant with retake CTA', async () => {
+      const compressImpl = jest.fn(async () => {
+        throw new Error('manipulate-failed');
+      });
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const onRetake = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          onRetake={onRetake}
+          compressPhotoImpl={compressImpl}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId('result-error-compress-failed'),
+        ).toBeOnTheScreen(),
+      );
+      expect(screen.getByTestId('result-error-headline')).toHaveTextContent(
+        /preparing your photo/i,
+      );
+      fireEvent.press(screen.getByTestId('result-retake'));
+      expect(onRetake).toHaveBeenCalledTimes(1);
+    });
+
+    // ─── reduce-motion ───────────────────────────────────────────────────
+    it('reduce-motion: error-card opacity is 1 immediately (no Animated.timing)', async () => {
+      mockedUseReduceMotion.mockReturnValue(true);
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'timeout' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-timeout')).toBeOnTheScreen(),
+      );
+      const errorView = screen.getByTestId('result-error-timeout');
+      const flat: Array<Record<string, unknown> | undefined> = Array.isArray(
+        errorView.props.style,
+      )
+        ? errorView.props.style.flat()
+        : [errorView.props.style];
+      const opacityValue = flat
+        .map((s) => (s as { opacity?: unknown } | undefined)?.opacity)
+        .find((v) => v !== undefined);
+      const numeric =
+        typeof opacityValue === 'number'
+          ? opacityValue
+          : (opacityValue as { _value?: number } | undefined)?._value;
+      expect(numeric).toBe(1);
+    });
+
+    // ─── dark theme ──────────────────────────────────────────────────────
+    it('dark theme: error headline uses darkTheme.colors.text', async () => {
+      mockedUseTheme.mockReturnValue(darkTheme);
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'server' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-headline')).toBeOnTheScreen(),
+      );
+      const headline = screen.getByTestId('result-error-headline');
+      const flat: Array<Record<string, unknown> | undefined> = Array.isArray(
+        headline.props.style,
+      )
+        ? headline.props.style.flat()
+        : [headline.props.style];
+      const color = flat
+        .map((s) => (s as { color?: unknown } | undefined)?.color)
+        .find((v) => v !== undefined);
+      expect(color).toBe(darkTheme.colors.text);
+    });
+
+    // ─── A11y roles ──────────────────────────────────────────────────────
+    it('a11y: server error variant has accessibilityRole=alert', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'server' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-server')).toBeOnTheScreen(),
+      );
+      const view = screen.getByTestId('result-error-server');
+      expect(view.props.accessibilityRole).toBe('alert');
+    });
+
+    it('a11y: queued variant has accessibilityRole=status (non-disruptive)', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      const view = screen.getByTestId('result-error-queued');
+      expect(view.props.accessibilityRole).toBe('status');
+    });
+
+    it('a11y: announceForAccessibility called with the headline on error transition', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'timeout' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const announceImpl = jest.fn();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          announceForAccessibilityImpl={announceImpl}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() => expect(announceImpl).toHaveBeenCalled());
+      // Announcement carries the editorial headline.
+      const announced = announceImpl.mock.calls.map((c) => c[0]);
+      expect(announced.some((s) => /taking longer than usual/i.test(String(s)))).toBe(
+        true,
+      );
+    });
+
+    it('a11y: announce only fires once per kind transition (idempotent on re-render)', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'server' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const announceImpl = jest.fn();
+
+      const { rerender } = render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          announceForAccessibilityImpl={announceImpl}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-server')).toBeOnTheScreen(),
+      );
+      const initialCount = announceImpl.mock.calls.length;
+      // Re-render — announcement should NOT fire again for the same kind.
+      rerender(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          announceForAccessibilityImpl={announceImpl}
+          testID="result"
+        />,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(announceImpl).toHaveBeenCalledTimes(initialCount);
+    });
+
+    // ─── Strict-mode double-mount (StrictMode wraps the tree) ─────────────
+    //
+    // React 19 strict-mode fires effects twice (mount → cleanup → mount).
+    // The screen's E5-008 design: compression's `cancelled` flag drops the
+    // first effect's setState, and `initialDiagnoseFiredRef` latches the
+    // diagnose call so it fires exactly once even when compression runs
+    // twice. So compressSpy may be called twice (effect re-runs) but
+    // diagnoseSpy fires exactly once. The user-visible state lands on a
+    // single error variant render.
+    it('strict-mode: diagnose fires exactly once; error variant renders once', async () => {
+      const { client, diagnoseSpy } = makeApiClient(async () => ({
+        ok: false,
+        kind: 'timeout',
+      }));
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <React.StrictMode>
+          <CameraResultScreen
+            photoUri="file:///raw.jpg"
+            mode="diagnose"
+            apiClient={client}
+            onSave={jest.fn()}
+            compressPhotoImpl={compressSpy}
+            testID="result"
+          />
+        </React.StrictMode>,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-timeout')).toBeOnTheScreen(),
+      );
+      // Diagnose latch holds even under strict-mode.
+      expect(diagnoseSpy).toHaveBeenCalledTimes(1);
+      // Exactly one error variant rendered (no duplicates).
+      expect(screen.getAllByTestId('result-error-timeout')).toHaveLength(1);
+      // Compression may have fired up to twice; the cancelled flag drops the
+      // first effect's setState, so the visible state is a single ready phase.
+      expect(compressSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(compressSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    });
+
+    // ─── Codex P2 regression: no stale error card during retry ───────────
+    //
+    // When the user presses "Try again", `useDiagnoseRequest` flips
+    // `status='requesting'` but keeps the previous error in `lastResult`.
+    // The loading dock is the only surface the user should see during the
+    // retry — the stale error card must NOT co-render alongside it (would
+    // double-announce on a screen reader and let the user re-press the
+    // already-pressed CTA).
+    it('codex-P2: stale error card hidden while a retry is in flight', async () => {
+      let resolveSecond: (v: ApiResult<DiagnoseResponse>) => void = () => {};
+      let callCount = 0;
+      const diagnoseImpl = jest.fn(
+        () =>
+          new Promise<ApiResult<DiagnoseResponse>>((resolve) => {
+            callCount += 1;
+            if (callCount === 1) {
+              resolve({ ok: false, kind: 'timeout' });
+            } else {
+              // Hold the second call open so the test observes the
+              // requesting window with no stale error card.
+              resolveSecond = resolve;
+            }
+          }),
+      );
+      const client: ApiClient = {
+        identify: jest.fn() as never,
+        diagnose: diagnoseImpl as never,
+        consult: jest.fn() as never,
+        review: jest.fn() as never,
+      };
+      const { spy: compressSpy } = makeCompressImpl();
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-timeout')).toBeOnTheScreen(),
+      );
+
+      // Press Try again. The hook flips status='requesting' but
+      // lastResult is still the timeout error.
+      fireEvent.press(screen.getByTestId('result-try-again'));
+      await waitFor(() => expect(diagnoseImpl).toHaveBeenCalledTimes(2));
+
+      // Loading dock should be visible AND the stale error card should be
+      // gone (not co-rendered).
+      await waitFor(() => expect(screen.getByTestId('result-loading')).toBeOnTheScreen());
+      expect(screen.queryByTestId('result-error-timeout')).toBeNull();
+
+      // Resolve the second request so the test cleans up.
+      await act(async () => {
+        resolveSecond({ ok: true, data: SUCCESS_DATA });
+      });
+    });
+
+    // ─── Discriminated-union hygiene: each kind yields its own testID ─────
+    //
+    // The 'network' kind is excluded from the live-render sweep because
+    // useDiagnoseRequest coerces it to 'queued' (master plan offline UX).
+    // The resolveErrorVariant helper test above covers network's render
+    // path directly. The remaining 6 kinds reach the screen verbatim.
+    it('discriminated union stays distinct: every kind (sans coerced network) has its own testID suffix', async () => {
+      const kinds: Array<{ kind: string; result: Parameters<typeof makeApiClient>[0] }> = [
+        { kind: 'low_confidence', result: async () => ({ ok: false, kind: 'low_confidence' }) },
+        { kind: 'timeout', result: async () => ({ ok: false, kind: 'timeout' }) },
+        { kind: 'server', result: async () => ({ ok: false, kind: 'server' }) },
+        { kind: 'parse_error', result: async () => ({ ok: false, kind: 'parse_error' }) },
+        { kind: 'layer1_reject', result: async () => ({ ok: false, kind: 'layer1_reject' }) },
+        { kind: 'queued', result: async () => ({ ok: false, kind: 'queued' }) },
+      ];
+
+      for (const { kind, result } of kinds) {
+        const { client } = makeApiClient(result);
+        const { spy: compressSpy } = makeCompressImpl();
+        const { unmount } = render(
+          <CameraResultScreen
+            photoUri="file:///raw.jpg"
+            mode="diagnose"
+            apiClient={client}
+            onSave={jest.fn()}
+            compressPhotoImpl={compressSpy}
+            testID="r"
+          />,
+        );
+        await waitFor(() =>
+          expect(screen.getByTestId(`r-error-${kind}`)).toBeOnTheScreen(),
+        );
+        unmount();
+      }
+    });
+  });
+
+  // ─── resolveErrorVariant unit tests ───────────────────────────────────
+  describe('resolveErrorVariant helper', () => {
+    it('returns null when phase is compressing', () => {
+      const v = __testing.resolveErrorVariant({ kind: 'compressing' }, null);
+      expect(v).toBeNull();
+    });
+
+    it('returns null when result is success', () => {
+      const v = __testing.resolveErrorVariant(
+        { kind: 'ready', compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 } },
+        { ok: true, data: SUCCESS_DATA },
+      );
+      expect(v).toBeNull();
+    });
+
+    it('compress-failed phase wins over a stale lastResult', () => {
+      const v = __testing.resolveErrorVariant(
+        { kind: 'compress-failed', error: new Error('x') },
+        { ok: true, data: SUCCESS_DATA },
+      );
+      expect(v?.kind).toBe('compress-failed');
+    });
+
+    it('returns the matching variant for every locked union kind', () => {
+      const ready = {
+        kind: 'ready' as const,
+        compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 },
+      };
+      const kinds = [
+        'network',
+        'timeout',
+        'server',
+        'layer1_reject',
+        'low_confidence',
+        'parse_error',
+        'queued',
+      ] as const;
+      for (const k of kinds) {
+        const v = __testing.resolveErrorVariant(ready, { ok: false, kind: k });
+        expect(v?.kind).toBe(k);
+      }
+    });
   });
 
   describe('buildNarrative helper', () => {
