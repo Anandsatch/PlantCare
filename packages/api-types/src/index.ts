@@ -11,7 +11,14 @@ export type ApiResult<T> =
   | { ok: true; kind: 'success'; data: T }
   | { ok: true; kind: 'queued'; queue_id: string }
   | { ok: false; kind: 'error'; message: string }
-  | { ok: false; kind: 'rate_limited'; retry_after_seconds: number }
+  // `retry_after_seconds` is optional: when the upstream rate-limited us
+  // without a parseable Retry-After value, the server omits the field
+  // rather than fabricate `0` (which mobile's `classifyResponse` would
+  // treat as "retry immediately" via `header ?? body` short-circuit on a
+  // numeric 0). Callers who need a fallback should use the response's
+  // Retry-After header (also propagated when known) and degrade gracefully
+  // when neither is set.
+  | { ok: false; kind: 'rate_limited'; retry_after_seconds?: number }
   | { ok: false; kind: 'rejected_off_topic'; message: string };
 
 // ─── /api/identify (E1) ──────────────────────────────────────────────────
@@ -115,6 +122,42 @@ export type ConsultRequestBody = {
     override_interval_days?: number | null;
     watering_history?: { day_offset: number; watered: boolean }[]; // ≤ 7 entries
   };
+};
+
+// ─── /api/weather (E6-002) ───────────────────────────────────────────────
+// Thin route over the Open-Meteo wrapper (`apps/backend/src/lib/openMeteo.ts`,
+// E6-001). Mobile passes `?lat=...&lon=...` query params; the route returns
+// the wrapper's normalized payload (current + 2-day forecast). Cache hits
+// surface as a response header (`x-cache: hit`) — never as a payload field —
+// so the client contract is identical for hits and misses, and a future
+// caching change at this layer can't accidentally break consumers.
+export type WeatherCurrent = {
+  /** ISO timestamp in the location's local timezone. */
+  time: string;
+  temperature_c: number;
+  relative_humidity_pct: number;
+  precipitation_mm: number;
+  /** WMO weather interpretation code. https://open-meteo.com/en/docs */
+  weather_code: number;
+};
+
+export type WeatherDailyEntry = {
+  /** ISO date in the location's local timezone (e.g. "2026-05-06"). */
+  date: string;
+  temperature_max_c: number;
+  temperature_min_c: number;
+  precipitation_sum_mm: number;
+  weather_code: number;
+};
+
+// V1 lock: exactly 2 daily entries (today + tomorrow). The watering rules
+// engine (E6-005) only consults this window; widening to 7 days would pull
+// scope and bloat KV value size on the free tier.
+export type WeatherResponse = {
+  current: WeatherCurrent;
+  daily: [WeatherDailyEntry, WeatherDailyEntry];
+  /** Resolved IANA timezone string from Open-Meteo, e.g. "America/Los_Angeles". */
+  timezone: string;
 };
 
 // ─── /api/review (E1-004) ────────────────────────────────────────────────
