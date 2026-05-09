@@ -23,3 +23,16 @@ export {
   PlantDetailRoute,
   type PlantDetailRouteProps,
 } from './PlantDetailRoute';
+
+// E5-011 GardenHomeScreen — camera-modal-host that owns the
+// list ↔ camera ↔ result view-state union. FAB tap → identify mode (saves to
+// the user's garden via E5-010), FAB long-press → quick-diagnose mode
+// (transient: result is shown then discarded; nothing persists). Lives at
+// the top level rather than inlined into PlantsListScreen so future deep-link
+// routes (notification → camera) and Android hardware-back semantics aren't
+// tangled with garden listing.
+export {
+  GardenHomeScreen,
+  type GardenHomeScreenProps,
+  type GardenHomeView,
+} from './GardenHomeScreen';
