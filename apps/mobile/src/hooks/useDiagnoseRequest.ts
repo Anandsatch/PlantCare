@@ -62,6 +62,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../api';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 
 /**
  * Optional plant context attached to a diagnose request. Shape matches the
@@ -105,6 +110,18 @@ export type UseDiagnoseRequestConfig = {
    * client's `network` kind handles the actual offline detection today.
    */
   netInfo?: NetInfoLike;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'diagnose')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota (`ok`, `low_confidence`,
+   * `parse_error`, `server`, `layer1_reject`). DO NOT record on
+   * `'queued'` (call hasn't fired) or `'network'`/`'timeout'` (call
+   * never reached the provider) — see `lib/llmBudget.ts` for the full
+   * policy. Optional: callers that aren't yet wired (older composition
+   * paths, tests of the diagnose surface itself) leave it unset and
+   * the hook is a no-op on the budget side.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type DiagnoseInput = {
@@ -143,7 +160,7 @@ export type UseDiagnoseRequestReturn = {
 export function useDiagnoseRequest(
   config: UseDiagnoseRequestConfig,
 ): UseDiagnoseRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
 
   const [status, setStatus] = useState<DiagnoseStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<DiagnoseResponse> | null>(
@@ -168,6 +185,44 @@ export function useDiagnoseRequest(
   // first request + retried second request commonly resolve out of order).
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // Stable ref for the budget executor. The caller usually passes a
+  // factory (`() => openDb()`) which allocates fresh identity per
+  // render; routing through a ref keeps `diagnose` referentially stable
+  // and avoids re-deriving the executor on every render. Same shape as
+  // the dbRef pattern in `useLlmBudget` (codex P3 from E11-005 review).
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  /**
+   * Resolve the budget writer if it's a factory. Errors are swallowed
+   * (best-effort: the LLM call already succeeded; failing the budget
+   * write isn't worth aborting the user's response).
+   */
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort budget insertion. Routes through the lib's
+   * `recordLlmCall` so the policy table (which kinds count) lives in
+   * one place. Always swallows errors — the caller's promise chain
+   * continues normally on a budget-write failure.
+   */
+  async function recordIfBillable(result: ApiResult<DiagnoseResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'diagnose');
+  }
 
   const diagnose = useCallback(
     async (input: DiagnoseInput): Promise<ApiResult<DiagnoseResponse>> => {
@@ -233,11 +288,21 @@ export function useDiagnoseRequest(
       // strictly better than the alternative (an error card the user
       // can't act on without changing networks).
       if (!result.ok && result.kind === 'network') {
+        // E11-006 insertion path: do NOT record. `network` means the
+        // fetch threw before reaching the provider; no quota was
+        // billed. The coercion to `queued` is a UX surface choice; it
+        // does NOT change the billable-vs-not classification.
         const coerced: ApiResult<DiagnoseResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
       }
 
+      // E11-006 insertion path. Fire-and-forget; budget writes never
+      // throw into the diagnose chain. Run BEFORE commitResult so the
+      // ordering is deterministic for tests, but don't await — the
+      // caller's promise resolves with `result` regardless of the
+      // budget write.
+      void recordIfBillable(result);
       commitResult(result, callId);
       return result;
     },

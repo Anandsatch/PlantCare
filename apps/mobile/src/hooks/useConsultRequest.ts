@@ -74,6 +74,11 @@ import type {
   ConsultRequest,
   ConsultResponse,
 } from '../api';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 import type { NetInfoLike } from './useDiagnoseRequest';
 
 const DEFAULT_NET_INFO: NetInfoLike = {
@@ -123,6 +128,16 @@ export type UseConsultRequestConfig = {
    * wire a real subscription via this same prop.
    */
   netInfo?: NetInfoLike;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'consult')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota (`ok`, `low_confidence`,
+   * `parse_error`, `server`, `layer1_reject`). DO NOT record on
+   * `'queued'` (call hasn't fired) or `'network'`/`'timeout'` (call
+   * never reached the provider). Optional — tests of the consult
+   * surface itself omit this and the hook is a no-op on the budget side.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type UseConsultRequestReturn = {
@@ -140,7 +155,7 @@ export type UseConsultRequestReturn = {
 export function useConsultRequest(
   config: UseConsultRequestConfig,
 ): UseConsultRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
 
   const [status, setStatus] = useState<ConsultStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<ConsultResponse> | null>(
@@ -157,6 +172,31 @@ export function useConsultRequest(
 
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // E11-006 insertion path. Same pattern as useDiagnoseRequest — see
+  // its module for the rationale (factory-vs-instance, swallow-on-error,
+  // best-effort policy).
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  async function recordIfBillable(result: ApiResult<ConsultResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'consult');
+  }
 
   const consult = useCallback(
     async (input: ConsultInput): Promise<ApiResult<ConsultResponse>> => {
@@ -214,11 +254,16 @@ export function useConsultRequest(
 
       // Network → queued coercion. See module header.
       if (!result.ok && result.kind === 'network') {
+        // E11-006: do NOT record. `network` means the fetch threw
+        // before reaching the provider; no quota was billed.
         const coerced: ApiResult<ConsultResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
       }
 
+      // E11-006 insertion path. Fire-and-forget; never throws into the
+      // consult chain. See useDiagnoseRequest for ordering rationale.
+      void recordIfBillable(result);
       commitResult(result, callId);
       return result;
     },

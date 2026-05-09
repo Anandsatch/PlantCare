@@ -36,6 +36,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { ApiClient, ApiResult, IdentifyResponse } from '../api';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 
 export type NetInfoLike = {
   isConnected: () => boolean | Promise<boolean>;
@@ -48,6 +53,13 @@ const DEFAULT_NET_INFO: NetInfoLike = {
 export type UseIdentifyRequestConfig = {
   apiClient: ApiClient;
   netInfo?: NetInfoLike;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'identify')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota. Same policy as `useDiagnoseRequest`.
+   * Optional — tests of the identify surface itself omit this.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type IdentifyInput = {
@@ -71,7 +83,7 @@ export type UseIdentifyRequestReturn = {
 export function useIdentifyRequest(
   config: UseIdentifyRequestConfig,
 ): UseIdentifyRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
 
   const [status, setStatus] = useState<IdentifyStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<IdentifyResponse> | null>(
@@ -88,6 +100,29 @@ export function useIdentifyRequest(
 
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // E11-006 insertion path. Same pattern as useDiagnoseRequest.
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  async function recordIfBillable(result: ApiResult<IdentifyResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'identify');
+  }
 
   const identify = useCallback(
     async (input: IdentifyInput): Promise<ApiResult<IdentifyResponse>> => {
@@ -121,11 +156,15 @@ export function useIdentifyRequest(
       }
 
       if (!result.ok && result.kind === 'network') {
+        // E11-006: do NOT record. `network` means the fetch threw before
+        // reaching the provider; no quota was billed.
         const coerced: ApiResult<IdentifyResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
       }
 
+      // E11-006 insertion path. Fire-and-forget; never throws.
+      void recordIfBillable(result);
       commitResult(result, callId);
       return result;
     },
