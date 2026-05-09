@@ -31,3 +31,12 @@ export type {
   CameraMode,
   PlantCareCameraViewProps,
 } from './CameraView';
+export {
+  SundayLetterCard,
+  shouldRender as shouldRenderSundayLetter,
+  TITLE_TEXT as SUNDAY_LETTER_TITLE,
+  BODY_TEXT as SUNDAY_LETTER_BODY,
+  OPEN_LABEL as SUNDAY_LETTER_OPEN_LABEL,
+  DISMISS_LABEL as SUNDAY_LETTER_DISMISS_LABEL,
+} from './SundayLetterCard';
+export type { SundayLetterCardProps } from './SundayLetterCard';
