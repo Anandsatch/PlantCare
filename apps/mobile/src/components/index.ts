@@ -1,5 +1,10 @@
 export { CameraPermissionPrePrompt } from './CameraPermissionPrePrompt';
 export type { CameraPermissionPrePromptProps } from './CameraPermissionPrePrompt';
+export { LocationPermissionPrePrompt } from './LocationPermissionPrePrompt';
+export type {
+  LocationCoords,
+  LocationPermissionPrePromptProps,
+} from './LocationPermissionPrePrompt';
 export { EmptyGardenWelcome, HEADLINE_TEXT, BODY_TEXT, CTA_LABEL } from './EmptyGardenWelcome';
 export type { EmptyGardenWelcomeProps } from './EmptyGardenWelcome';
 export { DiagnoseLoadingState } from './DiagnoseLoadingState';
