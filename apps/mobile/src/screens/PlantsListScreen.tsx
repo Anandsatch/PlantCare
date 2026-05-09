@@ -75,6 +75,7 @@ import { PlantCard } from '../components/PlantCard';
 import { FAB } from '../components/primitives/FAB';
 import { openDb } from '../db';
 import type { Plant } from '../db/types';
+import { useLlmBudget } from '../hooks/useLlmBudget';
 import { useTheme } from '../hooks/useTheme';
 import { usePlants } from '../hooks/usePlants';
 import { computeWateringStatus, type WateringStatus } from '../watering';
@@ -171,6 +172,15 @@ export interface PlantsListScreenProps {
    * to `openDb()`. Mirrors the dependency-injection shape `usePlants` uses.
    */
   db?: ScreenDb;
+  /**
+   * Test seam — inject a custom DB for the E11-005 budget meter
+   * (`useLlmBudget`). Defaults to `openDb()` (the production path
+   * shares one connection with the watering-summary query). Kept as a
+   * separate prop because tests typically pin the budget count
+   * deterministically without involving the watering-summary query, so
+   * a single combined seam would force every test to mock both.
+   */
+  budgetDb?: import('../hooks/useLlmBudget').LlmBudgetExecutor;
   testID?: string;
 }
 
@@ -182,10 +192,18 @@ export function PlantsListScreen({
   onPlantPress,
   nowMs,
   db,
+  budgetDb,
   testID,
 }: PlantsListScreenProps) {
   const theme = useTheme();
   const plantsApi = usePlants();
+  // E11-005 budget meter. Pass either the test-seam executor or a
+  // factory that lazily resolves the production DB on first refresh —
+  // the factory form means screen mount doesn't block on openDb().
+  const budget = useLlmBudget({
+    db: budgetDb ?? (() => openDb()),
+    now: nowMs !== undefined ? () => nowMs : undefined,
+  });
 
   /**
    * Generation counter for in-flight loads. Each invocation of `load`
@@ -327,6 +345,21 @@ export function PlantsListScreen({
           textTransform: 'uppercase',
           marginTop: 6,
         },
+        budgetMeter: {
+          // E11-005 budget meter — small all-caps below the eyebrow.
+          // Same Inter_500Medium / 11px / letterSpacing 1.4 / textMuted
+          // tokens as the eyebrow per DESIGN.md "small all-caps Inter
+          // for status labels". Tighter top margin (4px) keeps the two
+          // small-caps lines visually grouped as a single header block
+          // rather than two distinct sections.
+          fontFamily: 'Inter_500Medium',
+          fontSize: 11,
+          lineHeight: 14,
+          letterSpacing: 1.4,
+          color: theme.colors.textMuted,
+          textTransform: 'uppercase',
+          marginTop: 4,
+        },
         listContent: {
           // Bottom padding ensures the last row clears the FAB (56 + 16
           // anchor offset + 24 breathing room).
@@ -413,6 +446,17 @@ export function PlantsListScreen({
             >
               {`MY GARDEN — ${plants.length} ${plants.length === 1 ? 'PLANT' : 'PLANTS'}`}
             </Text>
+            {budget.status === 'ready' ? (
+              <Text
+                accessible
+                accessibilityRole="text"
+                accessibilityLabel={`${budget.used} of ${budget.limit} LLM calls today`}
+                style={styles.budgetMeter}
+                testID="plants-list-budget-meter"
+              >
+                {`${budget.used}/${budget.limit} TODAY`}
+              </Text>
+            ) : null}
           </View>
         }
         ItemSeparatorComponent={SeparatorComponent}
