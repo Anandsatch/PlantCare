@@ -73,8 +73,15 @@ export function useWateringEngine(plant: UseWateringEnginePlant): WateringStatus
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
-    // New mount / new plantId — fresh generation lineage.
+    // New mount / new plantId — fresh generation lineage. Also clear the
+    // last-watered state and its mirror ref so a previous plant's value
+    // doesn't suppress the new plant's optimistic flip via the
+    // `event.wateredAtMs > prev` guard below (codex P2). Without this, a
+    // future-timestamp / clock-skew interaction could leave the chip stale
+    // until the commit re-query lands.
     readGenerationRef.current = 0;
+    setLastWateredAt(null);
+    lastWateredAtRef.current = null;
 
     async function readLatest(): Promise<void> {
       const myGen = readGenerationRef.current;
