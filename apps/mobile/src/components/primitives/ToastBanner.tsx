@@ -117,6 +117,18 @@ const PULSE_DURATION_MS = 1100;
 // icon library for one glyph is a V1 scope-lock violation.
 const PENDING_GLYPH = '◷';
 
+// Text on tan/sage banners is locked to the deep ink (#2A2A2A) regardless of
+// theme. Reasoning (E10-001 dark-mode verification):
+//   - tan (#C9A873) and sage (#B8C5A6) are constants across Conservatory and
+//     Midnight (DESIGN.md "Status icon system" — the three accent hues do not
+//     invert; the cream-paper banner aesthetic stays warm in dark mode).
+//   - In dark mode, theme.colors.text = cream (#FAF6EE). cream on tan = 2.09:1
+//     and cream on sage = 1.68:1 — both below the 4.5:1 floor.
+//   - Locking to the deep ink keeps WCAG-AA legibility (tan: 6.38:1, sage:
+//     7.91:1) without inventing a new "onAccent" token (V1 token table is
+//     locked, see DESIGN.md and the master plan).
+const ON_ACCENT_INK = '#2A2A2A';
+
 export function ToastBanner(props: ToastBannerProps) {
   const {
     type,
@@ -252,7 +264,7 @@ export function ToastBanner(props: ToastBannerProps) {
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
           testID={testID ? `${testID}-pending-glyph` : undefined}
-          style={[styles.pendingGlyph, { color: theme.colors.text, opacity: pulseOpacity }]}
+          style={[styles.pendingGlyph, { color: ON_ACCENT_INK, opacity: pulseOpacity }]}
         >
           {PENDING_GLYPH}
         </Animated.Text>
@@ -261,10 +273,11 @@ export function ToastBanner(props: ToastBannerProps) {
         style={[
           styles.message,
           isPending ? styles.messageItalic : null,
-          { color: theme.colors.text },
+          { color: ON_ACCENT_INK },
         ]}
         numberOfLines={3}
       >
+
         {message}
       </Text>
       {action ? (
@@ -275,7 +288,7 @@ export function ToastBanner(props: ToastBannerProps) {
           hitSlop={8}
           style={styles.action}
         >
-          <Text style={[styles.actionLabel, { color: theme.colors.text }]}>
+          <Text style={[styles.actionLabel, { color: ON_ACCENT_INK }]}>
             {action.label}
           </Text>
         </Pressable>
@@ -289,7 +302,7 @@ export function ToastBanner(props: ToastBannerProps) {
           testID={testID ? `${testID}-retry` : undefined}
           style={styles.action}
         >
-          <Text style={[styles.actionLabel, { color: theme.colors.text }]}>
+          <Text style={[styles.actionLabel, { color: ON_ACCENT_INK }]}>
             RETRY
           </Text>
         </Pressable>

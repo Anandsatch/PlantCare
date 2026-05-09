@@ -227,6 +227,40 @@ describe('ToastBanner', () => {
     expect(queryByTestId('b')).toBeNull();
   });
 
+  it('locks message text to deep ink (#2A2A2A) on tan/sage in dark mode (E10-001 regression)', () => {
+    // Before E10-001 the message used theme.colors.text — cream (#FAF6EE) in
+    // dark mode — on tan/sage. cream-on-tan = 2.09:1, cream-on-sage = 1.68:1,
+    // both well below WCAG-AA 4.5:1. Locking to the deep ink keeps light-mode
+    // contrast (6.38 / 7.91:1) and lifts dark-mode contrast (also 6.38 /
+    // 7.91:1, since tan/sage are constants across themes).
+    mockedUseTheme.mockReturnValue(darkTheme);
+    for (const type of ['warn', 'info', 'pending'] as const) {
+      const { getByText, unmount } = render(
+        <ToastBanner type={type} message="dark mode msg" />,
+      );
+      const text = getByText('dark mode msg');
+      const style = flattenStyle(text.props.style);
+      expect(style.color).toBe('#2A2A2A');
+      unmount();
+    }
+  });
+
+  it('action button label is also deep ink on tan/sage in both themes', () => {
+    // Symmetric with the message regression above. The action label uses the
+    // same on-accent token contract.
+    const onPress = jest.fn();
+    for (const theme of [lightTheme, darkTheme]) {
+      mockedUseTheme.mockReturnValue(theme);
+      const { getByText, unmount } = render(
+        <ToastBanner type="warn" message="m" action={{ label: 'Retry', onPress }} />,
+      );
+      const action = getByText('Retry');
+      const style = flattenStyle(action.props.style);
+      expect(style.color).toBe('#2A2A2A');
+      unmount();
+    }
+  });
+
   it('does not start a timer while visible=false (no phantom dismiss)', () => {
     const onDismiss = jest.fn();
     const { rerender } = render(
