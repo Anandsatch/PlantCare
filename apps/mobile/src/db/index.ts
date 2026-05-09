@@ -7,6 +7,12 @@ export {
   type SqlExecutor,
 } from './migrations';
 export { SCHEMA_V1_SQL, V1_INDEXES, V1_TABLES } from './schema';
+export {
+  wateringEventsBus,
+  type WateringBusEvent,
+  type WateringBusListener,
+  type WateringEventsBus,
+} from './wateringEvents';
 export type {
   CreatePlantInput,
   Plant,

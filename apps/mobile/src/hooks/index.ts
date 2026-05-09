@@ -11,3 +11,15 @@ export {
   type UseDiagnoseRequestConfig,
   type UseDiagnoseRequestReturn,
 } from './useDiagnoseRequest';
+export {
+  useMarkWatered,
+  createMarkWateredApi,
+  MARK_WATERED_DEBOUNCE_MS,
+  type MarkWateredInput,
+  type MarkWateredResult,
+  type MarkWateredStatus,
+  type MarkWateredApi,
+  type UseMarkWateredReturn,
+  type WateringEventRow,
+  type WateringSource,
+} from './useMarkWatered';
