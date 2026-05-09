@@ -42,6 +42,8 @@ import type {
   IdentifyResponse,
   ReviewRequest,
   ReviewResponse,
+  WeatherRequest,
+  WeatherResponse,
 } from './types';
 import { API_ERROR_KINDS } from './types';
 
@@ -85,6 +87,7 @@ export type ApiClient = {
   diagnose: (input: DiagnoseRequest, opts?: RequestOptions) => Promise<ApiResult<DiagnoseResponse>>;
   consult: (input: ConsultRequest, opts?: RequestOptions) => Promise<ApiResult<ConsultResponse>>;
   review: (input: ReviewRequest, opts?: RequestOptions) => Promise<ApiResult<ReviewResponse>>;
+  weather: (input: WeatherRequest, opts?: RequestOptions) => Promise<ApiResult<WeatherResponse>>;
 };
 
 /**
@@ -220,6 +223,20 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
+        timeoutMs: opts?.timeoutMs,
+      });
+    },
+
+    async weather(input, opts) {
+      // GET with `?lat=&lon=` query params — mirrors the backend route
+      // shape (E6-002). The path is built here rather than via URL/
+      // URLSearchParams because RN ships URLSearchParams but its encoding
+      // semantics for numbers are identical to manual `encodeURIComponent`,
+      // and avoiding the wrapper keeps the no-bundle-bloat invariant.
+      const lat = encodeURIComponent(String(input.latitude));
+      const lon = encodeURIComponent(String(input.longitude));
+      return send<WeatherResponse>(`/api/weather?lat=${lat}&lon=${lon}`, {
+        method: 'GET',
         timeoutMs: opts?.timeoutMs,
       });
     },

@@ -25,3 +25,10 @@ export {
   type UseConsultRequestConfig,
   type UseConsultRequestReturn,
 } from './useConsultRequest';
+  useWeather,
+  type UseWeatherConfig,
+  type UseWeatherReturn,
+  type WeatherFetchInput,
+  type WeatherFetchResult,
+  type WeatherStatus,
+} from './useWeather';
