@@ -5,4 +5,6 @@ export {
   CameraResultScreen,
   type CameraResultScreenProps,
   type CameraResultSavePayload,
+  type CameraResultSavePhotoOnlyPayload,
+  type CameraResultReportErrorPayload,
 } from './CameraResultScreen';

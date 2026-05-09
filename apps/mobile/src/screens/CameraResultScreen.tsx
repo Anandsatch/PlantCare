@@ -1,5 +1,6 @@
 /**
- * E5-008 — `<CameraResultScreen>`: A-3 success path. The rescue moment.
+ * E5-008 + E5-009 — `<CameraResultScreen>`: A-3 success path AND every error
+ * variant. The rescue moment, end-to-end.
  *
  * Receives a captured photo URI + capture mode from the camera flow, runs
  * `expo-image-manipulator` compression (E5-005), calls `useDiagnoseRequest()`
@@ -13,17 +14,81 @@
  * the parent via `onSave`. SQLite persistence is E5-011's job.
  *
  * Scope (V1 lock):
- *   - This file owns the A-3 SUCCESS PATH ONLY. The error / Layer-1 reject /
- *     low-confidence / queued / timeout / parse_error variants ship in E5-009.
- *     Until then, anything that isn't `result.ok === true` renders a small
- *     placeholder so the screen never crashes — but there is no styled error UI
- *     here, no retry button for those paths, no offline banner. See the
- *     `// TODO E5-009` markers below.
+ *   - This file owns the A-3 SUCCESS PATH (E5-008) and every distinct error
+ *     variant from `ApiResult<DiagnoseResponse>` (E5-009). The discriminated
+ *     union STAYS distinct — no collapsing of `network` + `timeout` + `server`
+ *     + `parse_error` into a single bucket. Each kind gets its own headline,
+ *     narrative, and CTA pair per the master plan's Interaction-states section.
  *   - No SQLite write. `onSave` callback is invoked with the full payload +
  *     photo URI; E5-011 wires the actual `INSERT INTO diagnoses ...`.
- *   - Discriminated union is preserved verbatim. The parent (and E5-009 when
- *     it lands) gets every distinct kind from `ApiResult<DiagnoseResponse>` —
- *     no collapsing of `network` + `timeout` + `server` into a single bucket.
+ *   - `kind: 'queued'` re-uses the `<ToastBanner type='pending'>` primitive
+ *     when present (E2 primitives barrel). The parent screen owns the actual
+ *     sync_queue persistence (E7) — this screen renders the visual treatment
+ *     only.
+ *
+ * Error variants (per kind, all from `ApiResult<DiagnoseResponse>`):
+ *   - `low_confidence`: editorial Fraunces "We're not quite sure" headline,
+ *     Inter narrative explaining the model wasn't confident, candidate species
+ *     list (`message` field — alternatives aren't on the union, only inside
+ *     `data` which `low_confidence` doesn't carry), primary "Pick from list"
+ *     CTA → `onPickFromList()`, secondary "Try a different photo" → `onRetake()`.
+ *     Does NOT auto-save anything (the brief: "DO NOT auto-save anything").
+ *   - `timeout`: tan banner editorial "Diagnose is taking longer than usual."
+ *     Primary "Try again" → re-fires `diagnose()` with the SAME compressed
+ *     photo (never recompress). Secondary "Save photo for now" →
+ *     `onSavePhotoOnly(payload)` so parent can persist a photo-only record
+ *     without the diagnose result.
+ *   - `network`: distinct copy from timeout — "We can't reach the server.
+ *     Check your connection?" Same retry + save-for-now CTA pair. (Note: the
+ *     `useDiagnoseRequest` hook coerces api-client `network` → `queued` for the
+ *     V1 offline UX. But the discriminated union still has `network`, and a
+ *     future netInfo-aware path or an api client change could surface it
+ *     directly. We render proper UI for it so the kind isn't dead code.)
+ *   - `server`: "Something went wrong on our end." Primary "Try again" →
+ *     re-fires diagnose. Secondary "Report" → `onReportError(payload)` so the
+ *     parent can hand a redacted payload to telemetry. The retry copy on the
+ *     CTA itself stays "Try again", consistent with the timeout/network
+ *     primary-CTA voice. The `retry_after` field on the union is not consumed
+ *     yet — V1 leaves backoff to the user.
+ *   - `parse_error`: distinct from `server` because the failure mode is local
+ *     parse, not upstream. "We got a response we couldn't understand. Try
+ *     again?" Single "Try again" CTA → re-fires diagnose.
+ *   - `layer1_reject`: kind editorial card — Fraunces "We're focused on plant
+ *     care", Inter body explaining the photo doesn't appear to be a plant.
+ *     Primary "Try a different photo" → `onRetake()`. Voice mirrors the
+ *     E8-003 AddNoteSheet's reject card.
+ *   - `queued`: pending toast-style state — "We'll save when you're back
+ *     online." Uses `<ToastBanner type='pending'>` from the primitives barrel.
+ *     Stack dependency: ToastBanner ships from the E2 primitives barrel which
+ *     is in the stack base under `apps/mobile/src/components/primitives/index.ts`.
+ *     This is a hard import (compile-time dep), not a feature-flagged optional
+ *     — the codex adversarial pass flagged this; verified the symbol is in
+ *     `origin/Anandsatch/e5-camera-result` so the stack is consistent. No retry
+ *     CTA — the sync layer (E7) drains the queue when connectivity returns.
+ *   - `compress-failed` (screen-internal, not from `ApiResult`): the same
+ *     editorial tone as `parse_error` — "We had trouble preparing your photo.
+ *     Try a different shot?" Primary "Try a different photo" → `onRetake()`.
+ *     This kind isn't on the union; it's a screen-local phase from the
+ *     compression pipeline.
+ *
+ * Reduce-motion (every error variant):
+ *   - The reveal fade follows the same hard-disable pattern as the success
+ *     card: `useRef(new Animated.Value(reduceMotion ? 1 : 0))` + a guard that
+ *     skips `Animated.timing` entirely when reduce-motion is on. Audit-
+ *     defensible compliance per the lock from `DiagnoseLoadingState` (E5-007).
+ *
+ * A11y (every error variant):
+ *   - Container `accessibilityRole='alert'` for error states; `'status'` for
+ *     queued (non-disruptive). The role drives VoiceOver to announce the new
+ *     state immediately on transition.
+ *   - On transition into a non-success state, the screen calls
+ *     `AccessibilityInfo.announceForAccessibility(headline)` so VoiceOver
+ *     surfaces the editorial copy without requiring a node-handle round-trip.
+ *     We chose `announceForAccessibility` over `setAccessibilityFocus` because
+ *     the latter requires a `findNodeHandle` lookup that is fragile under
+ *     React strict-mode and adds noise to the test harness.
+ *   - CTAs have role `button` + label via `<EditorialButton>` (already
+ *     a11y-verified in its own ticket).
  *
  * Lifecycle:
  *   1. Mount with `{ photoUri, mode, plantContext? }` from the camera flow.
@@ -74,12 +139,13 @@ import { fonts } from '@plantcare/theme';
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactElement,
 } from 'react';
 import {
+  AccessibilityInfo,
+  type AccessibilityRole,
   Animated,
   AppState,
   type AppStateStatus,
@@ -91,7 +157,7 @@ import {
 
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../api';
 import { DiagnoseLoadingState } from '../components/DiagnoseLoadingState';
-import { EditorialButton, HeroPhoto } from '../components/primitives';
+import { EditorialButton, HeroPhoto, ToastBanner } from '../components/primitives';
 import { useDiagnoseRequest, type PlantContext } from '../hooks/useDiagnoseRequest';
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
@@ -113,6 +179,40 @@ export type CameraResultSavePayload = {
   mode: 'identify' | 'diagnose';
   /** The plant context, if any, that was attached to the diagnose request. */
   plantContext?: PlantContext;
+};
+
+/**
+ * Payload handed to `onSavePhotoOnly` when the user saves a photo without a
+ * diagnose result (timeout / network / similar). Carries the unresolved
+ * discriminated-union result so the parent can record the failure kind
+ * alongside the photo for later retry.
+ */
+export type CameraResultSavePhotoOnlyPayload = {
+  /** The compressed photo URI. */
+  photoUri: string;
+  /** The capture mode that produced this photo. */
+  mode: 'identify' | 'diagnose';
+  /** The plant context, if any. */
+  plantContext?: PlantContext;
+  /** The non-success result that triggered the save-for-later flow. Null if
+   *  saving from the `compress-failed` branch (no result was ever produced). */
+  result: Extract<ApiResult<DiagnoseResponse>, { ok: false }> | null;
+};
+
+/**
+ * Payload handed to `onReportError` from the server-error variant. The
+ * `message` field on the discriminated union is forwarded so the parent's
+ * telemetry pipeline can include a redacted server hint.
+ */
+export type CameraResultReportErrorPayload = {
+  /** The error kind that triggered the report. */
+  kind: 'server' | 'parse_error' | 'timeout' | 'network';
+  /** Optional server-supplied message from the union, if any. */
+  message?: string;
+  /** The compressed photo URI (or the original photoUri if compression failed). */
+  photoUri: string;
+  /** Capture mode. */
+  mode: 'identify' | 'diagnose';
 };
 
 export type CameraResultScreenProps = {
@@ -138,12 +238,46 @@ export type CameraResultScreenProps = {
    */
   onSave: (payload: CameraResultSavePayload) => void;
   /**
-   * Called when the user dismisses the result screen (close button — TODO,
-   * not part of the A-3 success card per the mockup; reserved for E5-009).
+   * Called when the user taps "Try a different photo" on a `layer1_reject`
+   * card or "Try a different photo" on a `low_confidence` / `compress-failed`
+   * card. The parent navigates back to the camera flow. When omitted, the CTA
+   * still renders but the press is a no-op — the brief calls out that
+   * `onRetake` is the parent's wiring concern.
+   */
+  onRetake?: () => void;
+  /**
+   * Called when the user taps "Pick from list" on the `low_confidence` card.
+   * Opens the manual species picker — same shape E5-010 uses. When omitted
+   * the CTA still renders but is a no-op.
+   */
+  onPickFromList?: () => void;
+  /**
+   * Called when the user taps "Save photo for now" on the `timeout` /
+   * `network` cards. Parent owns the actual persistence; this screen just
+   * emits the callback. When omitted, the CTA is hidden so the screen
+   * doesn't promise an action it can't fulfill.
+   */
+  onSavePhotoOnly?: (payload: CameraResultSavePhotoOnlyPayload) => void;
+  /**
+   * Called when the user taps "Report" on the `server` / `parse_error`
+   * variants. Parent forwards a redacted payload to telemetry. When omitted
+   * the CTA is hidden.
+   */
+  onReportError?: (payload: CameraResultReportErrorPayload) => void;
+  /**
+   * Called when the user dismisses the result screen (e.g. close button on
+   * an error variant). Optional — when omitted, no Close affordance renders.
    */
   onClose?: () => void;
   /** Test seam: override compression. Defaults to the production helper. */
   compressPhotoImpl?: (input: CompressPhotoInput) => Promise<CompressPhotoResult>;
+  /**
+   * Test seam: override `AccessibilityInfo.announceForAccessibility`. Defaults
+   * to the platform implementation. Tests use this to assert the headline
+   * announcement on transition into a non-success state without coupling to
+   * the AccessibilityInfo native module.
+   */
+  announceForAccessibilityImpl?: (announcement: string) => void;
   testID?: string;
 };
 
@@ -152,6 +286,133 @@ type ScreenPhase =
   | { kind: 'compress-failed'; error: unknown }
   | { kind: 'ready'; compressed: CompressPhotoResult };
 
+/**
+ * Discriminator for which error variant is currently active. Combines the
+ * screen-internal `compress-failed` phase with the `ApiResult` non-success
+ * kinds. `null` means "no error variant should render right now."
+ */
+type ErrorVariantKind =
+  | 'compress-failed'
+  | 'low_confidence'
+  | 'timeout'
+  | 'network'
+  | 'server'
+  | 'parse_error'
+  | 'layer1_reject'
+  | 'queued';
+
+type ErrorVariant = {
+  kind: ErrorVariantKind;
+  /** Editorial copy strings used to render the variant + announce a11y. */
+  copy: {
+    headline: string;
+    body: string;
+  };
+  /** The forwarded `message` field from the union, when present. Used by the
+   *  low_confidence variant to surface candidate species hints, and by the
+   *  server variant for telemetry forwarding. */
+  message?: string;
+};
+
+/**
+ * Map the current screen phase + last API result into a single error variant
+ * (or null when none should render). Centralizes the precedence rules so the
+ * JSX stays declarative.
+ *
+ * Precedence: `compress-failed` always wins over an API result — if compression
+ * never succeeded, we never even fired diagnose, so any prior `lastResult` is
+ * stale from a previous photoUri lifecycle.
+ */
+function resolveErrorVariant(
+  phase: ScreenPhase,
+  lastResult: ApiResult<DiagnoseResponse> | null,
+): ErrorVariant | null {
+  if (phase.kind === 'compress-failed') {
+    return {
+      kind: 'compress-failed',
+      copy: {
+        headline: 'We had trouble preparing your photo.',
+        body: "Try a different shot — the camera or the file may not have saved cleanly.",
+      },
+    };
+  }
+  if (phase.kind !== 'ready') return null;
+  if (lastResult === null || lastResult.ok) return null;
+
+  switch (lastResult.kind) {
+    case 'low_confidence':
+      return {
+        kind: 'low_confidence',
+        copy: {
+          headline: "We're not quite sure.",
+          body:
+            "The model wasn't confident enough to give a definitive answer. Pick from the list of candidates, or try a different photo with clearer light.",
+        },
+        message: lastResult.message,
+      };
+    case 'timeout':
+      return {
+        kind: 'timeout',
+        copy: {
+          headline: 'Diagnose is taking longer than usual.',
+          body:
+            'The lab is working on it but we lost patience. Try again in a moment, or save the photo for now and we will diagnose later.',
+        },
+        message: lastResult.message,
+      };
+    case 'network':
+      return {
+        kind: 'network',
+        copy: {
+          headline: "We can't reach the server.",
+          body: 'Check your connection? Once you are back online, try again or save the photo for now.',
+        },
+        message: lastResult.message,
+      };
+    case 'server':
+      return {
+        kind: 'server',
+        copy: {
+          headline: 'Something went wrong on our end.',
+          body: 'Try again in a moment, or report it so we can take a look.',
+        },
+        message: lastResult.message,
+      };
+    case 'parse_error':
+      return {
+        kind: 'parse_error',
+        copy: {
+          headline: "We got a response we couldn't understand.",
+          body: 'Try again — this usually clears on the next request.',
+        },
+        message: lastResult.message,
+      };
+    case 'layer1_reject':
+      return {
+        kind: 'layer1_reject',
+        copy: {
+          headline: "We're focused on plant care.",
+          body: "This photo doesn't look like a plant to us. Try a different shot of a plant or leaf.",
+        },
+        message: lastResult.message,
+      };
+    case 'queued':
+      return {
+        kind: 'queued',
+        copy: {
+          headline: "We'll save when you're back online.",
+          body: 'Your photo is queued. We will diagnose it the next time you have a connection.',
+        },
+      };
+    default: {
+      // Exhaustiveness: TypeScript flags any new kind that isn't handled.
+      const _exhaustive: never = lastResult.kind;
+      void _exhaustive;
+      return null;
+    }
+  }
+}
+
 export function CameraResultScreen({
   photoUri,
   mode,
@@ -159,8 +420,13 @@ export function CameraResultScreen({
   plantNickname,
   apiClient,
   onSave,
+  onRetake,
+  onPickFromList,
+  onSavePhotoOnly,
+  onReportError,
   onClose,
   compressPhotoImpl = defaultCompressPhoto,
+  announceForAccessibilityImpl,
   testID,
 }: CameraResultScreenProps): ReactElement {
   const theme = useTheme();
@@ -265,6 +531,56 @@ export function CameraResultScreen({
     });
   }, [phase, lastResult, onSave, mode, plantContext]);
 
+  // "Save photo for now" — fires from timeout / network variants. Parent owns
+  // the persistence; this screen forwards the compressed photoUri + the
+  // unresolved discriminated-union result so the parent can record both.
+  const handleSavePhotoOnly = useCallback(() => {
+    if (!onSavePhotoOnly) return;
+    if (phase.kind !== 'ready') return;
+    if (!lastResult || lastResult.ok) return;
+    onSavePhotoOnly({
+      photoUri: phase.compressed.uri,
+      mode,
+      plantContext,
+      result: lastResult,
+    });
+  }, [phase, lastResult, onSavePhotoOnly, mode, plantContext]);
+
+  // "Report" — fires from server / parse_error variants. Parent forwards a
+  // redacted payload to telemetry. We only emit kinds for which a "Report"
+  // CTA is meaningful (server, parse_error, timeout, network — i.e. failure
+  // modes the user might want to report).
+  const handleReportError = useCallback(() => {
+    if (!onReportError) return;
+    if (phase.kind !== 'ready') return;
+    if (!lastResult || lastResult.ok) return;
+    if (
+      lastResult.kind !== 'server' &&
+      lastResult.kind !== 'parse_error' &&
+      lastResult.kind !== 'timeout' &&
+      lastResult.kind !== 'network'
+    ) {
+      return;
+    }
+    onReportError({
+      kind: lastResult.kind,
+      message: lastResult.message,
+      photoUri: phase.compressed.uri,
+      mode,
+    });
+  }, [phase, lastResult, onReportError, mode]);
+
+  // "Try a different photo" / "Pick from list" passthroughs. Wrapped in
+  // useCallback so the buttons get stable handler references; the parent's
+  // callback is the source of truth for navigation.
+  const handleRetake = useCallback(() => {
+    onRetake?.();
+  }, [onRetake]);
+
+  const handlePickFromList = useCallback(() => {
+    onPickFromList?.();
+  }, [onPickFromList]);
+
   // Reveal fade for the success card. Skipped entirely under reduce-motion.
   const successOpacity = useRef(new Animated.Value(reduceMotion ? 1 : 0)).current;
   // Track when we transition into the success state so the fade fires once.
@@ -283,6 +599,76 @@ export function CameraResultScreen({
       useNativeDriver: true,
     }).start();
   }, [status, reduceMotion, successOpacity]);
+
+  // Reveal fade for the error / queued cards. Same reduce-motion gate as
+  // success — init at 1 when reduce-motion is on, otherwise init at 0 and
+  // run an Animated.timing on transition. The same `Animated.Value` is shared
+  // across every error variant; only one error card is visible at a time so
+  // re-using one driver keeps the code simple and avoids per-kind animation
+  // bookkeeping.
+  const errorOpacity = useRef(new Animated.Value(reduceMotion ? 1 : 0)).current;
+  // Latch so the fade only fires the first time we transition into a non-
+  // success state per `phase` lifetime. A re-fire of `diagnose()` from "Try
+  // again" that resolves to another non-success kind doesn't re-animate; the
+  // card is already visible. The latch resets via `phase` change (new photo).
+  const errorFadedRef = useRef(false);
+  useEffect(() => {
+    if (phase.kind === 'compressing') {
+      errorFadedRef.current = false;
+      return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase.kind]);
+
+  // The error state fires on (a) compress-failed phase, or (b) a non-ok
+  // lastResult after loading completes. Either way, we run the fade once.
+  const isErrorVariantVisible =
+    phase.kind === 'compress-failed' ||
+    (phase.kind === 'ready' &&
+      lastResult !== null &&
+      !lastResult.ok &&
+      status !== 'requesting');
+
+  useEffect(() => {
+    if (!isErrorVariantVisible) return;
+    if (errorFadedRef.current) return;
+    errorFadedRef.current = true;
+    if (reduceMotion) {
+      errorOpacity.setValue(1);
+      return;
+    }
+    Animated.timing(errorOpacity, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [isErrorVariantVisible, reduceMotion, errorOpacity]);
+
+  // A11y announcement on transition into a non-success state. Defaults to the
+  // platform implementation; tests inject a spy via the prop.
+  //
+  // We chose `announceForAccessibility` over `setAccessibilityFocus` because
+  // the latter requires a `findNodeHandle` lookup that is fragile under
+  // React strict-mode and adds noise to the test harness. The screen-reader
+  // semantic is identical: VoiceOver/TalkBack reads the editorial headline
+  // immediately on transition.
+  const announceImpl =
+    announceForAccessibilityImpl ?? AccessibilityInfo.announceForAccessibility;
+  const lastAnnouncedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const variant = resolveErrorVariant(phase, lastResult);
+    if (!variant) {
+      lastAnnouncedKeyRef.current = null;
+      return;
+    }
+    if (lastAnnouncedKeyRef.current === variant.kind) return;
+    lastAnnouncedKeyRef.current = variant.kind;
+    try {
+      announceImpl(variant.copy.headline);
+    } catch {
+      // AccessibilityInfo throws are non-fatal; ignore.
+    }
+  }, [phase, lastResult, announceImpl]);
 
   // ─── Render ───────────────────────────────────────────────────────────
 
@@ -375,65 +761,196 @@ export function CameraResultScreen({
         </Animated.View>
       )}
 
-      {/* TODO E5-009: render proper variants for non-success kinds. Until E5-009
-          ships, render a small placeholder so the screen doesn't crash and the
-          discriminated-union shape stays preserved upstream. The branch covers
-          two cases:
-            (1) `compress-failed` — `compressPhoto` rejected before diagnose
-                ever ran. Surfaces with `kind: 'compress-failed'` so E5-009 can
-                style this distinct from API-side errors.
-            (2) any non-ok `lastResult` — the API path returned a non-success
-                kind from the discriminated union; surface that kind verbatim. */}
-      {phase.kind === 'compress-failed' && (
-        <View
-          style={styles.placeholder}
-          testID={testID ? `${testID}-placeholder` : undefined}
-        >
-          <Text
-            style={[
-              styles.placeholderCopy,
-              { color: theme.colors.textMuted, fontFamily: fonts.body.regular },
-            ]}
+      {/* E5-009: distinct UI per error kind. resolveErrorVariant() centralizes
+          the precedence (compress-failed beats any stale API result). The
+          discriminated-union shape stays preserved through the variant copy
+          + the testID suffix per kind.
+
+          Codex P2 fix: gate on `isErrorVariantVisible` so a stale error card
+          does not co-render with the loading dock during a "Try again" retry.
+          When `status === 'requesting'` (re-fire in flight), the loading dock
+          is the only visible surface — the previous error result is still on
+          the hook, but we don't render it until the retry resolves. */}
+      {isErrorVariantVisible && (() => {
+        const variant = resolveErrorVariant(phase, lastResult);
+        if (!variant) return null;
+        return (
+          <Animated.View
+            style={[styles.errorCard, { opacity: errorOpacity }]}
+            // RN's `AccessibilityRole` type omits 'status' (it's a web-platform
+            // role that the native bridges don't surface). Master plan locks
+            // 'status' for queued (non-disruptive); we cast through
+            // `AccessibilityRole` so it round-trips for tests + any consumer
+            // reading the prop. On native, TalkBack/VoiceOver ignore unknown
+            // roles harmlessly. See ToastBanner for the same pattern.
+            accessibilityRole={
+              (variant.kind === 'queued' ? 'status' : 'alert') as AccessibilityRole
+            }
+            accessibilityLabel={variant.copy.headline}
+            testID={testID ? `${testID}-error-${variant.kind}` : undefined}
           >
-            {"We'll improve this in E5-009 (kind: compress-failed)."}
-          </Text>
-          {onClose && (
-            <View style={styles.placeholderCtaSpacer}>
-              <EditorialButton
-                variant="outline"
-                label="Close"
-                onPress={onClose}
-                testID={testID ? `${testID}-placeholder-close` : undefined}
+            {variant.kind === 'queued' ? (
+              // Queued state uses the ToastBanner pending primitive when E7-005
+              // (the primitives barrel ToastBanner) has merged. The brief notes
+              // both possibilities; we use the primitive directly because it is
+              // already exported from `@/components/primitives` (see E2 ticket
+              // E2-007). If a future barrel split renames the primitive, the
+              // import location is the single update point — the visual
+              // treatment (tan accent, italic copy) is owned by ToastBanner.
+              <ToastBanner
+                type="pending"
+                message={variant.copy.headline}
+                autoDismissMs={0}
+                testID={testID ? `${testID}-queued-banner` : undefined}
               />
+            ) : (
+              <Text
+                accessibilityRole="header"
+                style={[
+                  styles.errorHeadline,
+                  { color: theme.colors.text, fontFamily: fonts.display.semibold },
+                ]}
+                testID={testID ? `${testID}-error-headline` : undefined}
+              >
+                {variant.copy.headline}
+              </Text>
+            )}
+
+            {variant.kind !== 'queued' && (
+              <Text
+                style={[
+                  styles.errorBody,
+                  { color: theme.colors.textMuted, fontFamily: fonts.body.regular },
+                ]}
+                testID={testID ? `${testID}-error-body` : undefined}
+              >
+                {variant.copy.body}
+              </Text>
+            )}
+
+            {/* Per-kind CTA stack. Layer-1-reject + low_confidence + retake-
+                centric variants share the "Try a different photo" affordance;
+                timeout / network / server / parse_error share the "Try again"
+                affordance that re-fires diagnose. */}
+            <View style={styles.errorCtaStack}>
+              {variant.kind === 'low_confidence' && (
+                <>
+                  <EditorialButton
+                    variant="filled"
+                    label="Pick from list"
+                    onPress={handlePickFromList}
+                    accessibilityLabel="Pick from list"
+                    accessibilityHint="Open the manual species picker"
+                    testID={testID ? `${testID}-pick-from-list` : undefined}
+                  />
+                  <View style={styles.ctaSpacer} />
+                  <EditorialButton
+                    variant="outline"
+                    label="Try a different photo"
+                    onPress={handleRetake}
+                    accessibilityLabel="Try a different photo"
+                    testID={testID ? `${testID}-retake` : undefined}
+                  />
+                </>
+              )}
+
+              {(variant.kind === 'timeout' || variant.kind === 'network') && (
+                <>
+                  <EditorialButton
+                    variant="filled"
+                    label="Try again"
+                    onPress={handleRetry}
+                    accessibilityLabel="Try again"
+                    accessibilityHint="Re-runs the diagnose request with the same photo"
+                    testID={testID ? `${testID}-try-again` : undefined}
+                  />
+                  {onSavePhotoOnly && (
+                    <>
+                      <View style={styles.ctaSpacer} />
+                      <EditorialButton
+                        variant="outline"
+                        label="Save photo for now"
+                        onPress={handleSavePhotoOnly}
+                        accessibilityLabel="Save photo for now"
+                        testID={testID ? `${testID}-save-photo-only` : undefined}
+                      />
+                    </>
+                  )}
+                </>
+              )}
+
+              {variant.kind === 'server' && (
+                <>
+                  <EditorialButton
+                    variant="filled"
+                    label="Try again"
+                    onPress={handleRetry}
+                    accessibilityLabel="Try again"
+                    testID={testID ? `${testID}-try-again` : undefined}
+                  />
+                  {onReportError && (
+                    <>
+                      <View style={styles.ctaSpacer} />
+                      <EditorialButton
+                        variant="outline"
+                        label="Report"
+                        onPress={handleReportError}
+                        accessibilityLabel="Report this error"
+                        testID={testID ? `${testID}-report` : undefined}
+                      />
+                    </>
+                  )}
+                </>
+              )}
+
+              {variant.kind === 'parse_error' && (
+                <EditorialButton
+                  variant="filled"
+                  label="Try again"
+                  onPress={handleRetry}
+                  accessibilityLabel="Try again"
+                  testID={testID ? `${testID}-try-again` : undefined}
+                />
+              )}
+
+              {variant.kind === 'layer1_reject' && (
+                <EditorialButton
+                  variant="filled"
+                  label="Try a different photo"
+                  onPress={handleRetake}
+                  accessibilityLabel="Try a different photo"
+                  testID={testID ? `${testID}-retake` : undefined}
+                />
+              )}
+
+              {variant.kind === 'compress-failed' && (
+                <EditorialButton
+                  variant="filled"
+                  label="Try a different photo"
+                  onPress={handleRetake}
+                  accessibilityLabel="Try a different photo"
+                  testID={testID ? `${testID}-retake` : undefined}
+                />
+              )}
+
+              {/* No CTA for queued — the sync layer (E7) drains the queue
+                  when connectivity returns. The pending banner reads as a
+                  non-disruptive status, not an actionable error. */}
             </View>
-          )}
-        </View>
-      )}
-      {!isLoading && phase.kind !== 'compress-failed' && lastResult !== null && !lastResult.ok && (
-        <View
-          style={styles.placeholder}
-          testID={testID ? `${testID}-placeholder` : undefined}
-        >
-          <Text
-            style={[
-              styles.placeholderCopy,
-              { color: theme.colors.textMuted, fontFamily: fonts.body.regular },
-            ]}
-          >
-            {`We'll improve this in E5-009 (kind: ${lastResult.kind}).`}
-          </Text>
-          {onClose && (
-            <View style={styles.placeholderCtaSpacer}>
-              <EditorialButton
-                variant="outline"
-                label="Close"
-                onPress={onClose}
-                testID={testID ? `${testID}-placeholder-close` : undefined}
-              />
-            </View>
-          )}
-        </View>
-      )}
+
+            {onClose && variant.kind !== 'queued' && (
+              <View style={styles.placeholderCtaSpacer}>
+                <EditorialButton
+                  variant="outline"
+                  label="Close"
+                  onPress={onClose}
+                  testID={testID ? `${testID}-close` : undefined}
+                />
+              </View>
+            )}
+          </Animated.View>
+        );
+      })()}
     </ScrollView>
   );
 }
@@ -469,9 +986,10 @@ function buildNarrative(data: DiagnoseResponse): string {
   return '';
 }
 
-// Useful in tests to assert the narrative-builder behavior without rendering
-// the screen. Exported for that purpose; not part of the public API.
-export const __testing = { buildNarrative };
+// Useful in tests to assert the narrative-builder + variant-resolver behavior
+// without rendering the screen. Exported for that purpose; not part of the
+// public API.
+export const __testing = { buildNarrative, resolveErrorVariant };
 
 const styles = StyleSheet.create({
   scroll: {
@@ -509,13 +1027,22 @@ const styles = StyleSheet.create({
   ctaSpacer: {
     height: 12,
   },
-  placeholder: {
+  errorCard: {
     paddingTop: 32,
     paddingHorizontal: 24,
   },
-  placeholderCopy: {
-    fontSize: 14,
-    lineHeight: 20,
+  errorHeadline: {
+    fontSize: 28,
+    lineHeight: 32,
+    marginBottom: 12,
+  },
+  errorBody: {
+    fontSize: 16,
+    lineHeight: 24,
+    marginBottom: 24,
+  },
+  errorCtaStack: {
+    marginTop: 8,
   },
   placeholderCtaSpacer: {
     marginTop: 16,
