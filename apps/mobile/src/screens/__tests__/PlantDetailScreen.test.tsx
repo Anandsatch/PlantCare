@@ -15,7 +15,7 @@
 import { darkTheme, lightTheme } from '@plantcare/theme';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
-import { PhotoTimeline } from '../../components/PhotoTimeline';
+import { PhotoTimeline, type PhotoEntry } from '../../components/PhotoTimeline';
 import { WateringLedger } from '../../components/WateringLedger';
 import { useMarkWatered, type MarkWateredResult } from '../../hooks/useMarkWatered';
 import { useReduceMotion } from '../../hooks/useReduceMotion';
@@ -158,13 +158,13 @@ describe('PlantDetailScreen', () => {
     const baseProps = {
       plant,
       heroPhotoUri: null,
-      wateringEvents: [],
-      photos: [],
+      wateringEvents: [] as { wateredAtMs: number }[],
+      photos: [] as PhotoEntry[],
       onMarkWatered: jest.fn(),
       onEditDetails: jest.fn(),
       nowMs: NOW,
       testID: 'screen',
-    } as const;
+    };
 
     // 'water' → "Water today"
     mockedEngine.mockReturnValue('water');
