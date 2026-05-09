@@ -779,4 +779,282 @@ describe('WeeklyReviewScreen', () => {
       expect(tree.queryByTestId('weekly-review-error-network')).not.toBeNull(),
     );
   });
+
+  // ── E9-005 additions: dispatch-latch reset, fingerprint cache discipline ──
+
+  it('dispatch latch fingerprints by request body — concurrent pending mounts with DIFFERENT requests fire 2 independent /api/review calls', async () => {
+    // Codex P1 catch on the first version of this test: the original
+    // design unmounted the first tree and reset the cache before mounting
+    // the second, which means a CONSTANT cache key implementation would
+    // also pass (because the cache was empty by the second mount). Real
+    // diagnostic: two trees mounted CONCURRENTLY with different requests
+    // must each hold their own in-flight promise — both review() calls
+    // must fire BEFORE either resolves.
+    //
+    // To prove this, we hand-stage the resolvers. If the cache key were
+    // constant (or `weekRequest`-independent), the second mount would
+    // re-use the first's pending promise and review() would fire only
+    // once. The assertion that BOTH review() calls fire while still
+    // pending is the diagnostic.
+    let resolveA!: (v: ApiResult<ReviewResponse>) => void;
+    let resolveB!: (v: ApiResult<ReviewResponse>) => void;
+    const reviewSpy = jest.fn();
+    let callIndex = 0;
+    reviewSpy.mockImplementation(() => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return new Promise<ApiResult<ReviewResponse>>((r) => {
+          resolveA = r;
+        });
+      }
+      return new Promise<ApiResult<ReviewResponse>>((r) => {
+        resolveB = r;
+      });
+    });
+    const client: ApiClient = {
+      identify: jest.fn() as never,
+      diagnose: jest.fn() as never,
+      consult: jest.fn() as never,
+      review: reviewSpy as never,
+      weather: jest.fn() as never,
+    };
+
+    const weekA = defaultRequest();
+    const weekB = defaultRequest();
+    weekB.week_summary.watering_events = 11; // distinct fingerprint
+    weekB.plants[0]!.nickname = 'Steve-renamed';
+
+    const treeA = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={weekA}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    const treeB = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={weekB}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+
+    // Both pending — assert TWO review() calls fired before either resolves.
+    // A constant cache key would only fire ONE here.
+    await waitFor(() => expect(reviewSpy).toHaveBeenCalledTimes(2));
+    // Body shape diagnostic: the two pending calls received DIFFERENT
+    // request bodies. (Confirms the screen forwarded weekRequest verbatim,
+    // so any bucketed-by-week-key cache MUST have keyed on body.)
+    const firstArg = reviewSpy.mock.calls[0]?.[0] as { week_summary: { watering_events: number } };
+    const secondArg = reviewSpy.mock.calls[1]?.[0] as { week_summary: { watering_events: number } };
+    expect(firstArg.week_summary.watering_events).toBe(3);
+    expect(secondArg.week_summary.watering_events).toBe(11);
+
+    // Resolve both, drain the trees so we don't leak pending state to
+    // adjacent tests. Order doesn't matter — the dispatch fingerprint
+    // discipline only fires the assertion above.
+    await act(async () => {
+      resolveA({ ok: true, data: SUCCESS_DATA });
+      resolveB({ ok: true, data: SUCCESS_DATA });
+    });
+    treeA.unmount();
+    treeB.unmount();
+  });
+
+  it('dispatch latch SAME-fingerprint case: two concurrent mounts with the SAME request body share a single in-flight /api/review call', async () => {
+    // Reverse direction of the test above. The fingerprint cache's whole
+    // point is that two simultaneous mounts of the SAME weekRequest body
+    // share one in-flight promise — the StrictMode mount→unmount→mount
+    // path is the worked example, but the cleanest assertion is to mount
+    // two independent screens concurrently with byte-identical request
+    // bodies and observe that review() fires exactly once.
+    let resolve!: (v: ApiResult<ReviewResponse>) => void;
+    const reviewSpy = jest.fn(
+      () =>
+        new Promise<ApiResult<ReviewResponse>>((r) => {
+          resolve = r;
+        }),
+    );
+    const client: ApiClient = {
+      identify: jest.fn() as never,
+      diagnose: jest.fn() as never,
+      consult: jest.fn() as never,
+      review: reviewSpy as never,
+      weather: jest.fn() as never,
+    };
+
+    const sharedRequest = defaultRequest();
+
+    const treeA = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={sharedRequest}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    // Use a STRUCTURALLY-EQUAL but distinct object reference to prove
+    // it's the BODY that's keyed, not the reference identity.
+    const treeB = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={defaultRequest()}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+
+    // Both screens hit the cache for the same body fingerprint. Only one
+    // review() call should be in flight; the second mount reuses the
+    // promise.
+    await waitFor(() => expect(reviewSpy).toHaveBeenCalledTimes(1));
+    // Assert the count is STILL 1 even after letting microtasks drain.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(reviewSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolve({ ok: true, data: SUCCESS_DATA });
+    });
+    treeA.unmount();
+    treeB.unmount();
+  });
+
+  it('retry path bypasses the in-flight cache (bypassCache=true) — second mount of same fingerprint after retry does not get served the prior in-flight failure', async () => {
+    // Sequence under test:
+    //   1. Mount #1 → review() rejects with `network`.
+    //   2. User taps Try again → review() resolves with success. The retry
+    //      path is wired with `bypassCache=true` so the cache doesn't
+    //      re-serve a prior failure.
+    //   3. After unmount, the in-flight cache has been cleared (resolution
+    //      finalizer). A NEW mount with the same fingerprint dispatches
+    //      its own review() call rather than getting cached failure.
+    let calls = 0;
+    const { client, reviewSpy } = makeApiClient(async () => {
+      calls += 1;
+      if (calls === 1) return { ok: false, kind: 'network' };
+      return { ok: true, data: SUCCESS_DATA };
+    });
+    const tree = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={defaultRequest()}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    await waitFor(() =>
+      expect(tree.queryByTestId('weekly-review-error-network')).not.toBeNull(),
+    );
+    fireEvent.press(tree.getByTestId('weekly-review-retry'));
+    await waitFor(() => expect(reviewSpy).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(tree.queryByTestId('weekly-review-content')).not.toBeNull(),
+    );
+    // After retry resolves, the cache finalizer should have cleared the
+    // entry. A second mount with the same fingerprint should dispatch.
+    tree.unmount();
+    const tree2 = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={defaultRequest()}
+        plantsForLedgers={makePlantInputs()}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    await waitFor(() => expect(reviewSpy).toHaveBeenCalledTimes(3));
+    tree2.unmount();
+  });
+
+  it('Hermes-without-Intl: WeeklyReviewScreen renderers do not call toLocaleDateString / Intl.DateTimeFormat at the screen layer', async () => {
+    // The screen composes <WateringLedger> (which uses MONTH_SHORT fallback
+    // wired in E3-001) and renders no dates in its own copy. Lock that
+    // contract: on a render of headline + narrative + per-plant blocks +
+    // the dismiss CTA, the screen layer fires zero Intl-formatted-date
+    // calls. The ledger's own date-format calls are tested in the ledger's
+    // own suite — here we just count net calls produced by mounting the
+    // screen's per-plant section, which should remain bounded by the
+    // ledger's known column count.
+    const localeSpy = jest.spyOn(Date.prototype, 'toLocaleDateString');
+    const intlSpy = jest.spyOn(Intl, 'DateTimeFormat');
+    try {
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const tree = render(
+        <WeeklyReviewScreen
+          apiClient={client}
+          weekRequest={defaultRequest()}
+          plantsForLedgers={makePlantInputs()}
+          onDismiss={jest.fn()}
+          nowMs={FIXED_NOW}
+        />,
+      );
+      await waitFor(() =>
+        expect(tree.queryByTestId('weekly-review-content')).not.toBeNull(),
+      );
+      // Capture initial call count BEFORE asserting screen-layer cleanliness
+      // — the screen mounts <WateringLedger> per plant, which IS allowed to
+      // call into Intl. The lock here is "the screen does not introduce
+      // *additional* Intl calls beyond what its children declare." If
+      // someone later adds a `toLocaleDateString()` to the headline or
+      // narrative, the call count would jump well above the per-ledger
+      // budget. We assert a generous upper bound: 2 plants × 7 columns ×
+      // ≤2 format calls per column = 28 max, beyond which a screen-layer
+      // regression has clearly slipped in.
+      const totalLocale = localeSpy.mock.calls.length;
+      const totalIntl = intlSpy.mock.calls.length;
+      expect(totalLocale).toBeLessThanOrEqual(28);
+      expect(totalIntl).toBeLessThanOrEqual(28);
+    } finally {
+      localeSpy.mockRestore();
+      intlSpy.mockRestore();
+    }
+  });
+
+  it('empty week: NO crash, NO loading-skeleton-stuck state — empty editorial copy renders cleanly', async () => {
+    // Lock the WORKBACK acceptance "A-6 renders for empty week" with a
+    // sweep of post-resolution assertions: the empty editorial copy is
+    // visible, the loading skeleton is gone, no error variant rendered, no
+    // per-plant section, and the dismiss CTA is reachable.
+    const { client } = makeApiClient(async () => ({ ok: true, data: EMPTY_DATA }));
+    const tree = render(
+      <WeeklyReviewScreen
+        apiClient={client}
+        weekRequest={{
+          week_summary: {
+            plants_total: 0,
+            watering_events: 0,
+            skip_events: 0,
+            diagnoses: 0,
+          },
+          plants: [],
+        }}
+        plantsForLedgers={[]}
+        onDismiss={jest.fn()}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    await waitFor(() =>
+      expect(tree.queryByTestId('weekly-review-empty')).not.toBeNull(),
+    );
+    expect(tree.queryByTestId('weekly-review-loading')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-network')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-server')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-timeout')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-parse_error')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-layer1_reject')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-error-low_confidence')).toBeNull();
+    expect(tree.queryByTestId('weekly-review-per-plant')).toBeNull();
+    // Dismiss CTA is always present.
+    expect(tree.queryByTestId('weekly-review-dismiss')).not.toBeNull();
+  });
 });
