@@ -570,6 +570,137 @@ export async function scheduleBackoff(
   return resolved;
 }
 
+export interface ResetForRetryInput {
+  /**
+   * Override clock for tests. The reset writes `next_attempt_at = nowMs` so
+   * the row is immediately drainable. Production passes `Date.now()`.
+   */
+  nowMs: number;
+}
+
+export interface ResetForRetryResult {
+  /**
+   * Subset of the input ids that actually transitioned from `failed` to
+   * `pending`. Ids that were in any other state (`pending`, `in_flight`,
+   * `done`) or didn't exist are silently dropped — see file header for
+   * the rationale.
+   */
+  resetIds: string[];
+}
+
+/**
+ * Reset terminally-failed rows back to `pending` so the drainer picks them
+ * up on the next pass. Wired by the E7-006 "Tap to retry" UI: a user with
+ * 3 failed offline diagnose requests taps the banner, and this CRUD call
+ * re-arms all three. The drainer's normal selectReadyForRetry pass picks
+ * them up — no special re-entry path; they look identical to a fresh
+ * enqueue from the drainer's POV (status='pending', attempt_count=0,
+ * next_attempt_at=now, last_error=NULL).
+ *
+ * State guard: ONLY rows in status='failed' are reset. Specifically:
+ *   - `in_flight` rows are NEVER touched. The drainer owns the in_flight
+ *     lifecycle (claim → dispatch → markDone | scheduleBackoff |
+ *     markFailedTerminal). A user-facing reset that flipped an in_flight
+ *     row back to pending would race with the drainer's terminal mutator,
+ *     causing duplicate API calls and lost-update on attempt_count. Codex
+ *     P1 from adversarial review (E7-006).
+ *   - `pending` rows are no-op'd. They're already drainable; resetting
+ *     attempt_count to 0 would erase backoff progress and make the UI's
+ *     "tap to retry harder" feel like "tap to start over" — wrong mental
+ *     model. The hook layer (useFailedQueue) will only surface failed
+ *     rows to the user, so the pending case here is defense-in-depth
+ *     against a race where the drainer rescheduled the row between the
+ *     hook's read and this write.
+ *   - `done` rows are no-op'd. Resetting a successful drain would re-fire
+ *     a request the backend already accepted — duplicate side effects.
+ *
+ * Atomicity: single exclusive transaction. The pre-state probe + UPDATE
+ * for every id runs inside `withExclusiveTransactionAsync` so a sibling
+ * drainer (or sibling reset call) cannot observe an intermediate state.
+ *
+ * Return shape: the array of ids that actually transitioned. The hook
+ * surfaces this so the UI can announce e.g. "Retrying 3 of 3" vs.
+ * "Retrying 2 of 3 (one was already in flight)" — though V1 collapses
+ * both to the same banner copy ("Retrying…").
+ *
+ * Schedule semantics: attempt_count is reset to 0 because the master plan
+ * (line 633) specifies this surface "manually re-queues with
+ * attempt_count=0" — the user retry resets the schedule so the row gets
+ * a fresh full-budget run, not "one more attempt at the schedule's tail."
+ * `next_attempt_at` is set to nowMs so the drainer's first
+ * selectReadyForRetry pass after this call grabs the row.
+ *
+ * V1 scope locks (this CRUD only):
+ *   - DO NOT add a "reset all failed" sweep helper here. The hook layer
+ *     does that by querying failed rows then passing the ids — keeps the
+ *     CRUD primitive small.
+ *   - DO NOT touch in_flight rows. The drainer owns them. See above.
+ *   - DO NOT add a "reset with custom delay" entry point. The retry
+ *     surface is "drain now"; if the user wanted to defer, they'd close
+ *     the banner. The drainer's 429 path stays drainer-local for the
+ *     same reason (avoid foot-gun custom-delay APIs at the CRUD edge).
+ */
+export async function resetForRetry(
+  db: QueueExecutor,
+  ids: string[],
+  input: ResetForRetryInput,
+): Promise<ResetForRetryResult> {
+  if (ids.length === 0) {
+    return { resetIds: [] };
+  }
+  const nowMs = input.nowMs;
+  const resetIds: string[] = [];
+  await db.withExclusiveTransactionAsync(async () => {
+    for (const id of ids) {
+      const row = await db.getFirstAsync<{ status: QueueStatus }>(
+        'SELECT status FROM sync_queue WHERE id = ?',
+        [id],
+      );
+      // State guard: only failed rows reset. in_flight is the drainer's;
+      // pending/done are no-ops. Missing id is a no-op.
+      if (!row || row.status !== 'failed') {
+        continue;
+      }
+      await db.runAsync(
+        `UPDATE sync_queue
+            SET status = 'pending',
+                attempt_count = 0,
+                next_attempt_at = ?,
+                last_error = NULL
+          WHERE id = ? AND status = 'failed'`,
+        [nowMs, id],
+      );
+      resetIds.push(id);
+    }
+  });
+  return { resetIds };
+}
+
+/**
+ * Read-only helper: list every row currently in `status='failed'`. The
+ * E7-006 hook (`useFailedQueue`) calls this on mount, on AppState resume,
+ * and after retry to refresh the banner count. Ordered by created_at ASC
+ * (oldest failure first) so the UI presents in submission order if it
+ * ever expands beyond a count + retry-all CTA.
+ *
+ * No filter on attempt_count: a row in `status='failed'` reached terminal
+ * via the schedule (attempt 6) OR was a non-retryable kind (parse_error /
+ * layer1_reject / unknown endpoint / paradox) at any earlier attempt. The
+ * UI doesn't distinguish — both are "the drainer gave up; user can retry"
+ * from the user's POV.
+ */
+export async function selectFailedRows(
+  db: QueueExecutor,
+): Promise<QueueRow[]> {
+  return db.getAllAsync<QueueRow>(
+    `SELECT ${SELECT_COLUMNS}
+       FROM sync_queue
+      WHERE status = 'failed'
+      ORDER BY created_at ASC`,
+    [],
+  );
+}
+
 export interface SweepStaleInput {
   nowMs: number;
 }

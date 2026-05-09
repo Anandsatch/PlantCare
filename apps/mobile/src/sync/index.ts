@@ -14,14 +14,24 @@ export {
   MAX_ATTEMPTS,
   TTL_MS,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
   claimInFlight,
 >>>>>>> origin/Anandsatch/e7-sync-drainer
+=======
+  claimInFlight,
+>>>>>>> origin/Anandsatch/e7-tap-retry
   enqueueRequest,
   markDone,
   markFailedTerminal,
   markInFlight,
+<<<<<<< HEAD
   scheduleBackoff,
+=======
+  resetForRetry,
+  scheduleBackoff,
+  selectFailedRows,
+>>>>>>> origin/Anandsatch/e7-tap-retry
   selectReadyForRetry,
   sweepStaleEntries,
   type DedupeKey,
@@ -32,6 +42,11 @@ export {
   type QueueKind,
   type QueueRow,
   type QueueStatus,
+<<<<<<< HEAD
+=======
+  type ResetForRetryInput,
+  type ResetForRetryResult,
+>>>>>>> origin/Anandsatch/e7-tap-retry
   type ScheduleBackoffInput,
   type ScheduleBackoffResult,
   type SelectReadyInput,
@@ -39,12 +54,15 @@ export {
   type SweepStaleResult,
 } from './queueCrud';
 <<<<<<< HEAD
+<<<<<<< HEAD
   useNetworkActivity,
   type NetworkActivitySnapshot,
   type NetworkStatus,
   type UseNetworkActivityConfig,
 } from './useNetworkActivity';
 =======
+=======
+>>>>>>> origin/Anandsatch/e7-tap-retry
 
 export {
   DRAIN_BATCH_LIMIT,
@@ -55,4 +73,15 @@ export {
   type SyncDrainer,
   type SyncDrainerConfig,
 } from './SyncDrainer';
+<<<<<<< HEAD
 >>>>>>> origin/Anandsatch/e7-sync-drainer
+=======
+
+export {
+  useFailedQueue,
+  type FailedRow,
+  type UseFailedQueueConfig,
+  type UseFailedQueueReturn,
+  type UseFailedQueueStatus,
+} from './useFailedQueue';
+>>>>>>> origin/Anandsatch/e7-tap-retry

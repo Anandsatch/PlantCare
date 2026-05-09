@@ -2,6 +2,42 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.47.0] - 2026-05-08
+
+E7-006 — "Tap to retry" surface for failed sync_queue rows. Stacks on E7-002's `SyncDrainer` (which itself stacks on E7-001's CRUD). Ships the data hook (`useFailedQueue`) + the presentation primitive (`QueueRetryBanner`) + a CRUD addition (`resetForRetry` + `selectFailedRows`) wired through the same exclusive-transaction discipline as `claimInFlight`. The banner is NOT mounted in any screen in this PR — that's a future ticket; today the surface is composable.
+
+### Added
+- `apps/mobile/src/sync/queueCrud.ts` — adds `resetForRetry(db, ids, { nowMs })` and `selectFailedRows(db)`. `resetForRetry` runs the per-id pre-state probe + UPDATE inside a single `withExclusiveTransactionAsync`, mirroring `claimInFlight`'s pattern. State guard restricts the reset to `status='failed'` rows only — `in_flight` is the drainer's lifecycle (a UI-side reset would race the drainer's terminal mutator and could double-fire API calls), `pending` is already drainable (resetting attempt_count to 0 would erase backoff progress), and `done` would re-fire an accepted request. Returns `{ resetIds: string[] }` so the caller knows which ids actually transitioned. `selectFailedRows` returns rows ordered by `created_at ASC`.
+- `apps/mobile/src/sync/useFailedQueue.ts` — the hook. Surface: `{ failedRows, retryAll, retryOne, refresh, status }`. `retryOne(id)` / `retryAll()` reset failed rows then call `drainer.drainNow()` to kick off processing immediately. `refresh()` re-queries and skips setState when the row id list is unchanged (steady-state stability — no banner re-render on every AppState resume in the common case). AppState `'active'` transition triggers a refresh. `status` flips `idle → retrying → idle` around retry; second retry while one is in flight is a no-op (drainer is itself idempotent on concurrent calls). Refresh requests coalesce: if a refresh is in flight when another is requested, the second waits for the first then runs a follow-up SELECT, so a post-write refresh always observes the post-write state (codex P2 fix).
+- `apps/mobile/src/components/QueueRetryBanner.tsx` — composes `<ToastBanner type='pending'>` from the primitives barrel. Renders nothing when `failedCount === 0`; otherwise shows "{N} saved offline. Tap to retry." with a count-aware Retry CTA. The CTA's accessibilityLabel is "Retry N saved request(s)" so screen readers hear the count. While `retrying`, the CTA is fully disabled (`accessibilityState={{disabled:true}}` + `Pressable.disabled=true`); the label flips to "Retrying". No entry animation in V1 — reduce-motion has nothing to disable, and a static-layout test pins the contract for future edits.
+- `apps/mobile/src/components/primitives/ToastBanner.tsx` — adds optional `disabled` to `ToastBannerAction`. When set, the inner Pressable forwards `disabled` + `accessibilityState={{disabled:true}}`. Backward compatible (default false).
+- `apps/mobile/src/sync/__tests__/useFailedQueue.test.tsx` — 17 tests across empty/non-empty failedRows, retryOne + retryAll happy paths (with row-state assertions against the underlying SQLite), AppState 'active' triggers refresh, AppState 'background'/'inactive' do NOT, the `idle → retrying → idle` transition under a held drainer promise, retryOne on already-pending and in_flight rows (safe no-ops), retryAll with no failed rows skips drainer.drainNow() entirely, post-retry refresh observes post-write state (codex P2 regression), refresh idempotency (same row set keeps array reference), strict-mode-style double mount, and a "second retryAll while one in flight is a no-op" check.
+- `apps/mobile/src/components/__tests__/QueueRetryBanner.test.tsx` — 14 tests across null-render at count 0 / negative count, plural + singular copy, count-aware accessibilityLabel ("Retry 3 saved requests"), CTA disabled state while retrying (with accessibilityState assertion), the no-Animated.View static-layout pin, reduce-motion still renders, dark-theme renders, strict-mode double mount, and a custom testID path.
+- `apps/mobile/src/sync/__tests__/queueCrud.test.ts` — 11 new tests for resetForRetry (single + multiple reset, NEVER reset in_flight / pending / done, missing-id no-op, mixed input, empty input, last_error cleared) and selectFailedRows (ordered by created_at ASC, empty result).
+
+### Adversarial review (codex)
+One P2 + two P3s caught + addressed before ship; mobile test count went 429 → 473 (+44 net of new tests added to lock the fixes).
+
+- **P2 — refresh dropped instead of coalesced.** Codex pointed out that the original `refreshInFlightRef` was a boolean drop guard: if a manual refresh started before retry's reset transaction committed, retry's post-write `await refresh()` would no-op (the in-flight one was already running with a stale read), and the in-flight refresh would return the pre-write snapshot. `setFailedRows` would be skipped via `sameIdList` (matching the stale ref) and the banner would stay visible with rows that were already reset to pending. **Fixed** by changing `refreshInFlightRef` to a `Promise<void> | null` and adding a `refreshPendingRef` flag; refresh requests during an in-flight read now wait for it then run a follow-up SELECT, so the caller's await always observes a post-this-call read. New test `post-retry refresh observes the post-write state even when a refresh is mid-flight` locks the regression.
+- **P3 — `retrying` flag did not actually disable the CTA.** The original code only swapped `onPress` to a noop while keeping the Pressable rendered as enabled — screen readers still announced an enabled button labeled "Retrying", and a future hook wiring with different single-flight semantics could surprise. **Fixed** by extending `ToastBannerAction` with optional `disabled` that routes through both the Pressable's `disabled` prop AND `accessibilityState={{disabled:true}}`. The QueueRetryBanner sets it from the `retrying` prop. New test `CTA carries accessibilityState.disabled=true while retrying`.
+- **P3 — count-aware retry accessibilityLabel was exported but not applied.** `buildRetryLabel(count)` was tested as a pure function but the actual Pressable label was the static "Retry"/"Retrying". **Fixed** by routing `buildRetryLabel(count)` through `ToastBanner.action.label` (which serves as both visual + a11y label). The visual is slightly more verbose ("Retry 3 saved requests" vs "Retry") but accessibility-correct. A future ToastBanner upgrade can split visual vs a11y label.
+
+### V1 scope locks (rejected)
+- ORM (Drizzle / Prisma / Kysely) — same scope lock as the CRUD + drainer.
+- date-fns / dayjs / luxon / Temporal — UTC ms only.
+- Job-runner library — the retry path is "reset rows + fire drainNow", three lines.
+- Mounting the banner in any screen — that's a future ticket. This PR ships the hook + component as composable units.
+- Resetting in_flight rows — drainer owns the lifecycle. CRUD enforces.
+- Skipping the resetForRetry CRUD addition — mirroring `claimInFlight`'s pattern keeps the transaction discipline auditable; pushing it into the hook would tangle hook + persistence.
+- Auto-retry on AppState resume — the user explicitly tapped a CTA to opt in; auto-retry would surprise users who left a row failed deliberately (e.g. waiting for wifi).
+- Custom-delay reset entry point — the retry button is "drain now"; if the user wanted to wait, they don't tap it. Same foot-gun rationale as the drainer's 429 override staying drainer-local.
+
+### Notes
+- **resetForRetry returns the actually-transitioned ids:** mixed-input calls (some failed, some in_flight, some missing) silently drop the non-failed entries from the return set. This means `retryAll` is safe to call against a stale snapshot — the CRUD's state guard handles the race where a sibling drainer flipped a row out of `failed` between the snapshot read and the reset call.
+- **The hook does NOT mount the banner anywhere:** the QueueRetryBanner file header documents this. Future ticket (likely part of E7-004 wiring or a follow-up) wires the hook + banner into `<PlantsListScreen>`. Today the banner is a presentation primitive ready to be composed.
+- **Refresh coalescing is bounded:** the `while (refreshPendingRef.current && refreshInFlightRef.current)` loop terminates because each pass either clears the in-flight ref (the SELECT completes) or clears the pending flag (the SELECT it asked for fired). No two concurrent SELECTs can stack — the in-flight ref is set BEFORE the SELECT runs.
+- **No new dependencies.** The hook uses `react`'s built-ins + RN's `AppState`; the banner uses RN's `Pressable` + the existing `ToastBanner`.
+
 ## [0.1.49.0] - 2026-05-08
 
 E5-012 — Camera-flow integration tests covering the full capture → diagnose → result chain across `<PlantCareCameraView>` and `<CameraResultScreen>`. Stacks on PR #47 (E5-009 error variants); base for merge is `Anandsatch/e5-result-errors`, not `main`. The discipline this adds: real component composition (only module-boundary mocks for `expo-camera`, `useTheme`, `useReduceMotion`, the api-client, and `compressPhotoImpl`), every kind from the locked discriminated union exercised end-to-end, and explicit invariants we couldn't catch from unit tests alone — Strict-mode double-mount latches on both shutter and diagnose, cached-compression-on-retry (compression count must stay at 1 when "Try again" fires), reduce-motion init-at-end-state honored across the loading→variant transition, and AppState-resume permission re-query.
@@ -174,6 +210,7 @@ Two P2s and one P3 caught + addressed before ship; mobile test count went 391 �
 - **The 429 override is a direct UPDATE, not a CRUD call:** the CRUD's `scheduleBackoff` is locked to the master-plan schedule; adding a "schedule with custom delay" entry point would surface a foot-gun. The drainer's `rescheduleAfterRateLimit` writes directly with `WHERE status='in_flight'` to defend against concurrent terminal mutations.
 - **drainNow() must be synchronous-bodied to preserve promise identity:** an outer `async function` would wrap each return value in a fresh promise, breaking referential equality on concurrent calls. The implementation cache-and-returns `activeDrain` directly so `drainNow() === drainNow()` while a drain is in flight.
 
+<<<<<<< HEAD
 ## [0.1.42.0] - 2026-05-08
 
 E5-009 — `<CameraResultScreen>` A-3 error variants. Replaces the E5-008 `// TODO E5-009` placeholder with distinct UI per kind from the `ApiResult<DiagnoseResponse>` discriminated union, plus the screen-internal `compress-failed` phase. Stacks on PR #33 (E5-008 success path); base for merge is `Anandsatch/e5-camera-result`, not `main`. Every locked kind from the master plan stays distinct in the type, in the resolver, and in the rendered JSX — no kind collapses into another. 33 new screen tests (mobile suite 410, was 376; the 5 placeholder tests from E5-008 are updated to assert the new variant testIDs rather than the placeholder copy).
@@ -318,6 +355,8 @@ One P2 caught + addressed before ship:
 - **Why iOS `'inactive'` maps to `'background'` (and not `'active'`)**: `'inactive'` fires during the app-switcher slide-up, incoming-call peek, and Control Center pull-down. Treating these as `'active'` would let the drainer fire mid-gesture (battery + UX cost); treating as `'background'` is the conservative choice. When the user dismisses the gesture without leaving, AppState fires `'active'` again and we transition back. Net: one spurious background→active round-trip during a brief peek, smoothed by the debounce on the drainer side (E7-002).
 - **Why `isInternetReachable === null` is treated as online (not offline)**: `null` is the "probe in flight" state on a fresh subscribe. Treating it as offline would briefly flap `offline_active` on every launch even on a connected device. The conservative-for-flapping choice is to assume online until the probe disconnects; the drainer's first fetch will discover the truth either way.
 
+=======
+>>>>>>> origin/Anandsatch/e7-tap-retry
 ## [0.1.38.0] - 2026-05-07
 
 E7-001 — `sync_queue` CRUD layer. The persistence root for offline-mode LLM requests: typed `enqueueRequest` / `selectReadyForRetry` / `markInFlight` / `markDone` / `markFailedTerminal` / `scheduleBackoff` / `sweepStaleEntries` over the `sync_queue` table that E2-002 created. State machine matches the master plan: `pending → in_flight → done | failed | back-to-pending` with the locked backoff schedule (1m / 5m / 30m / 2h / 8h / fail). 7-day TTL sweeper deletes only terminal rows (`done` / `failed`) — pending and in_flight are preserved regardless of age so a long-offline user does not lose queued work. UTC ms only; no calendar math (DST/IDL contract enforced by static source-grep tests, mirroring `useWateringEngine` E4-002). E7-002 (drainer) and E7-004 (hook wiring) compose on top; `useDiagnoseRequest` is intentionally untouched in this PR — each LLM hook still coerces `network → queued` at the UI layer until E7-004.
@@ -356,6 +395,7 @@ Findings codex left as PARTIAL after review (acknowledged, not deferred):
 - **`sweepStaleEntries` count-before-delete vs delete-with-RETURNING:** chose count-first because the `RETURNING` clause's row-yield shape varies between expo-sqlite and the better-sqlite3 test adapter. The tiny race window between `count(*)` and `DELETE` is non-fatal: even if a pending row flipped to done between the two statements, both the count and the delete predicate are `status IN ('done','failed')` so the row would be counted in the delete only if it qualifies, and the deletion count is monotonic. The drainer is the only writer; the user does not edit queue rows directly.
 - **No `expired` status:** the master plan diagram drew an `'expired'` terminal state populated by the sweeper. E7-001 deliberately omits it: pending and in_flight rows are preserved regardless of age. A user offline 8 days should not lose their queued diagnose. The sweeper's job is table hygiene, not retention policy enforcement on un-drained work.
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 >>>>>>> origin/Anandsatch/e6-watering-engine-v2
@@ -732,6 +772,8 @@ Two P2 findings — both addressed before ship:
 >>>>>>> origin/Anandsatch/e6-watering-engine-v2
 =======
 >>>>>>> origin/Anandsatch/e5-camera-tests
+=======
+>>>>>>> origin/Anandsatch/e7-tap-retry
 ## [0.1.26.0] - 2026-05-04
 
 E5-004 — `<CameraView>` wraps `expo-camera` with permission-gated rendering (composes `CameraPermissionPrePrompt` from E5-003), a top mode-toggle pill (identify / diagnose), and a bottom shutter button. The mode prop discriminates downstream behavior in E5-008 (`CameraResultScreen`) and E5-010 (`AddPlantScreen`). Stacks on `Anandsatch/e5-camera-pre-prompt` (PR #18); auto-rebases to main when E5-003 lands. The wrapper is exported as `PlantCareCameraView` from `apps/mobile/src/components/CameraView.tsx` because `expo-camera` already exports a class component named `CameraView` from its modern API — the file name keeps symmetry with the master-plan spec, the export name avoids the import collision.

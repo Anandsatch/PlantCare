@@ -34,7 +34,9 @@ import {
   markDone,
   markFailedTerminal,
   markInFlight,
+  resetForRetry,
   scheduleBackoff,
+  selectFailedRows,
   selectReadyForRetry,
   sweepStaleEntries,
   type QueueBindValue,
@@ -716,6 +718,165 @@ describe('claimInFlight (atomic claim variant)', () => {
     const wins = [a, b].filter(Boolean).length;
     expect(wins).toBe(1);
     expect(rowOf(raw, r.id)!.status).toBe('in_flight');
+  });
+});
+
+describe('resetForRetry (E7-006 — Tap to retry)', () => {
+  async function failOne(
+    raw: DatabaseSync,
+    q: QueueExecutor,
+  ): Promise<string> {
+    const r = await enqueueRequest(q, {
+      kind: 'diagnose',
+      payload: 'p',
+      nowMs: 1_000,
+    });
+    raw
+      .prepare(
+        "UPDATE sync_queue SET status='failed', attempt_count=6, last_error='boom' WHERE id = ?",
+      )
+      .run(r.id);
+    return r.id;
+  }
+
+  it('resets a single failed row to pending with attempt_count=0 and next_attempt_at=now', async () => {
+    const { raw, q } = await freshDb();
+    const id = await failOne(raw, q);
+
+    const result = await resetForRetry(q, [id], { nowMs: 9_000 });
+    expect(result.resetIds).toEqual([id]);
+
+    const r = rowOf(raw, id)!;
+    expect(r.status).toBe('pending');
+    expect(r.attempt_count).toBe(0);
+    expect(r.next_attempt_at).toBe(9_000);
+    expect(r.last_error).toBeNull();
+  });
+
+  it('resets multiple failed rows in a single transaction', async () => {
+    const { raw, q } = await freshDb();
+    const a = await failOne(raw, q);
+    const b = await failOne(raw, q);
+    const c = await failOne(raw, q);
+
+    const result = await resetForRetry(q, [a, b, c], { nowMs: 5_000 });
+    expect(result.resetIds.sort()).toEqual([a, b, c].sort());
+    for (const id of [a, b, c]) {
+      const r = rowOf(raw, id)!;
+      expect(r.status).toBe('pending');
+      expect(r.attempt_count).toBe(0);
+      expect(r.next_attempt_at).toBe(5_000);
+    }
+  });
+
+  it('does NOT reset an in_flight row (drainer owns its lifecycle)', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    raw
+      .prepare(
+        "UPDATE sync_queue SET status='in_flight', attempt_count=2, next_attempt_at=100 WHERE id = ?",
+      )
+      .run(r.id);
+
+    const result = await resetForRetry(q, [r.id], { nowMs: 9_000 });
+    expect(result.resetIds).toEqual([]);
+
+    const row = rowOf(raw, r.id)!;
+    expect(row.status).toBe('in_flight');
+    expect(row.attempt_count).toBe(2);
+    expect(row.next_attempt_at).toBe(100);
+  });
+
+  it('does NOT reset a pending row (already drainable)', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    raw
+      .prepare(
+        "UPDATE sync_queue SET attempt_count=3, next_attempt_at=2_000_000 WHERE id = ?",
+      )
+      .run(r.id);
+
+    const result = await resetForRetry(q, [r.id], { nowMs: 9_000 });
+    expect(result.resetIds).toEqual([]);
+
+    const row = rowOf(raw, r.id)!;
+    expect(row.status).toBe('pending');
+    expect(row.attempt_count).toBe(3);
+    expect(row.next_attempt_at).toBe(2_000_000);
+  });
+
+  it('does NOT reset a done row (resetting would re-fire an accepted request)', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    raw.prepare("UPDATE sync_queue SET status='done' WHERE id = ?").run(r.id);
+
+    const result = await resetForRetry(q, [r.id], { nowMs: 9_000 });
+    expect(result.resetIds).toEqual([]);
+    expect(rowOf(raw, r.id)!.status).toBe('done');
+  });
+
+  it('silently drops missing ids', async () => {
+    const { q } = await freshDb();
+    const result = await resetForRetry(q, ['no-such-id'], { nowMs: 1 });
+    expect(result.resetIds).toEqual([]);
+  });
+
+  it('mixed input: returns only the ids that actually transitioned', async () => {
+    const { raw, q } = await freshDb();
+    const failed = await failOne(raw, q);
+    const inFlight = await enqueueRequest(q, {
+      kind: 'diagnose',
+      payload: 'p',
+      nowMs: 1,
+    });
+    raw
+      .prepare("UPDATE sync_queue SET status='in_flight' WHERE id = ?")
+      .run(inFlight.id);
+
+    const result = await resetForRetry(q, [failed, inFlight.id, 'missing'], {
+      nowMs: 9_000,
+    });
+    expect(result.resetIds).toEqual([failed]);
+
+    expect(rowOf(raw, failed)!.status).toBe('pending');
+    expect(rowOf(raw, inFlight.id)!.status).toBe('in_flight');
+  });
+
+  it('empty input returns empty resetIds without opening a transaction', async () => {
+    const { q } = await freshDb();
+    const result = await resetForRetry(q, [], { nowMs: 1 });
+    expect(result.resetIds).toEqual([]);
+  });
+
+  it('clears last_error on reset', async () => {
+    const { raw, q } = await freshDb();
+    const id = await failOne(raw, q);
+    expect(rowOf(raw, id)!.last_error).toBe('boom');
+    await resetForRetry(q, [id], { nowMs: 9_000 });
+    expect(rowOf(raw, id)!.last_error).toBeNull();
+  });
+});
+
+describe('selectFailedRows (E7-006)', () => {
+  it('returns only failed rows ordered by created_at ASC', async () => {
+    const { raw, q } = await freshDb();
+    const a = await enqueueRequest(q, { kind: 'diagnose', payload: 'a', nowMs: 100 });
+    const b = await enqueueRequest(q, { kind: 'diagnose', payload: 'b', nowMs: 200 });
+    const c = await enqueueRequest(q, { kind: 'diagnose', payload: 'c', nowMs: 300 });
+
+    raw.prepare("UPDATE sync_queue SET status='failed' WHERE id = ?").run(a.id);
+    raw.prepare("UPDATE sync_queue SET status='failed' WHERE id = ?").run(c.id);
+    raw.prepare("UPDATE sync_queue SET status='in_flight' WHERE id = ?").run(b.id);
+
+    const rows = await selectFailedRows(q);
+    expect(rows.map((r) => r.id)).toEqual([a.id, c.id]);
+    expect(rows.every((r) => r.status === 'failed')).toBe(true);
+  });
+
+  it('returns empty when no rows are failed', async () => {
+    const { q } = await freshDb();
+    await enqueueRequest(q, { kind: 'diagnose', payload: 'a', nowMs: 1 });
+    expect(await selectFailedRows(q)).toEqual([]);
   });
 });
 
