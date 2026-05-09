@@ -19,3 +19,12 @@ export type {
   PlantRow,
   UpdatePlantPatch,
 } from './types';
+export { CONSULT_STATUS_VALUES } from './types';
+export type {
+  CreateNoteInput,
+  Note,
+  NoteConsultStatus,
+  NoteRow,
+} from './types';
+export { createNotesApi, useNotes } from './notes';
+export type { NotesApi, NotesExecutor } from './notes';

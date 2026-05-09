@@ -34,3 +34,26 @@ export {
   type WeatherFetchResult,
   type WeatherStatus,
 } from './useWeather';
+export {
+  usePersistNote,
+  payloadToPersistInput,
+  subscribeToNoteEvents,
+  type PersistNoteInput,
+  type PersistNoteResult,
+  type PersistNoteStatus,
+  type UsePersistNoteConfig,
+  type UsePersistNoteReturn,
+} from './usePersistNote';
+
+export {
+  useMarkWatered,
+  createMarkWateredApi,
+  MARK_WATERED_DEBOUNCE_MS,
+  type MarkWateredInput,
+  type MarkWateredResult,
+  type MarkWateredStatus,
+  type MarkWateredApi,
+  type UseMarkWateredReturn,
+  type WateringEventRow,
+  type WateringSource,
+} from './useMarkWatered';
