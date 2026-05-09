@@ -123,6 +123,50 @@ CREATE INDEX idx_queue_drainable
 `;
 
 /**
+ * V2 migration: adds the `llm_calls` table that backs the client-side LLM
+ * daily-budget counter (E11-005). The master plan locks the budget to a
+ * client-side counter — there is NO `/api/budget` endpoint and NO KV-
+ * backed budget. See WORKBACK.md line 590 and the master plan's "free →
+ * escalate router" section.
+ *
+ * Schema:
+ *
+ *   - `id`            AUTOINCREMENT — keeps row identity stable across
+ *                     re-inserts even if a future `vacuum` rebuild would
+ *                     otherwise reuse a rowid. AUTOINCREMENT is
+ *                     intentional even though the budget hook only reads
+ *                     by COUNT(*) today; a future "show me my last 50
+ *                     calls" surface would want a stable monotonic id.
+ *   - `endpoint`      TEXT — one of 'identify' | 'diagnose' | 'consult' |
+ *                     'review'. Stored as TEXT (not a CHECK enum) for the
+ *                     same reason `notes.consult_status` is TEXT: a future
+ *                     endpoint addition shouldn't trigger a SQLite
+ *                     migration. Validation happens at the boundary in
+ *                     the recordLlmCall helper (lands in E11-006).
+ *   - `called_at_ms`  INTEGER — unix milliseconds. UTC-ms only; the
+ *                     budget hook compares against `startOfTodayUtcMs(now)`.
+ *                     No calendar math (project-wide E4-002 lock).
+ *
+ * Index `idx_llm_calls_called_at` supports the budget hook's
+ * `COUNT(*) WHERE called_at_ms >= ?` predicate. At V1's 50-rows-per-day
+ * scale the index is overkill, but it keeps the read O(log N) for a
+ * dogfooding window where the table grows unbounded (no V1 retention
+ * policy) — a dogfooder running for 6 months at peak quota lands at
+ * ~9000 rows. Without the index a full scan on every render of the
+ * Plants list is wasteful.
+ */
+export const SCHEMA_V2_SQL = `
+CREATE TABLE llm_calls (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  endpoint      TEXT NOT NULL,
+  called_at_ms  INTEGER NOT NULL
+);
+
+CREATE INDEX idx_llm_calls_called_at
+  ON llm_calls(called_at_ms);
+`;
+
+/**
  * Names of every table the V1 migration creates. Exported so tests can verify
  * presence without re-listing them in the test file.
  */
@@ -150,3 +194,13 @@ export const V1_INDEXES = [
   'idx_diagnoses_photo',
   'idx_queue_drainable',
 ] as const;
+
+/**
+ * Names of every table the V2 migration adds. Exported so tests can verify
+ * presence after the migration runs without re-listing them in the test
+ * file. Cumulative table inventory after V2 = V1_TABLES + V2_TABLES.
+ */
+export const V2_TABLES = ['llm_calls'] as const;
+
+/** Indexes the V2 migration adds. */
+export const V2_INDEXES = ['idx_llm_calls_called_at'] as const;

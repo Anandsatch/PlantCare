@@ -6,7 +6,14 @@ export {
   type Migration,
   type SqlExecutor,
 } from './migrations';
-export { SCHEMA_V1_SQL, V1_INDEXES, V1_TABLES } from './schema';
+export {
+  SCHEMA_V1_SQL,
+  SCHEMA_V2_SQL,
+  V1_INDEXES,
+  V1_TABLES,
+  V2_INDEXES,
+  V2_TABLES,
+} from './schema';
 export {
   wateringEventsBus,
   type WateringBusEvent,
