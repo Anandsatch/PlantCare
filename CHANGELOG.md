@@ -2,6 +2,35 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+## [0.1.49.0] - 2026-05-08
+
+E5-012 — Camera-flow integration tests covering the full capture → diagnose → result chain across `<PlantCareCameraView>` and `<CameraResultScreen>`. Stacks on PR #47 (E5-009 error variants); base for merge is `Anandsatch/e5-result-errors`, not `main`. The discipline this adds: real component composition (only module-boundary mocks for `expo-camera`, `useTheme`, `useReduceMotion`, the api-client, and `compressPhotoImpl`), every kind from the locked discriminated union exercised end-to-end, and explicit invariants we couldn't catch from unit tests alone — Strict-mode double-mount latches on both shutter and diagnose, cached-compression-on-retry (compression count must stay at 1 when "Try again" fires), reduce-motion init-at-end-state honored across the loading→variant transition, and AppState-resume permission re-query.
+
+### Added
+- `apps/mobile/src/__tests__/cameraFlow.integration.test.tsx` — 23 integration tests organized by flow:
+  - Happy path: shutter → onCapture payload (uri/width/height) → result screen → success card → Save fires `onSave` with the full payload; capture payload shape matches the `<CameraView>` contract end-to-end (no payload mismatch can slip through unit tests).
+  - Per-kind variant rendering: `low_confidence` (manual picker CTA), `timeout` (Try again re-fires with cached photo), `layer1_reject` (routes back to camera), `server_error` (Report CTA fires `onReportError` with kind/message/photoUri/mode), `parse_error` (single Try again, no Report — distinct from server), `queued` (ToastBanner pending surface, no retry CTA), `network` coercion (api-client throw renders queued banner per master plan line 346, not network/timeout variant).
+  - Permission flow: denied → pre-prompt visible (composed from E5-003), shutter not rendered; permanently denied → no path forward without Settings; AppState resume → permission re-queried via `getPermission` on foreground (covers grant-in-Settings recovery).
+  - Reduce-motion: success-card and error-variant reveals both initialize opacity at 1 with no `Animated.timing` fired (mirrors the canonical pattern from E9-003 / E9-004 / E7-005).
+  - Strict-mode latches: shutter does NOT fire `takePictureAsync` twice on a single tap; result screen fires diagnose exactly once across mount→unmount→mount.
+  - Cancel paths: tapping camera close pre-shutter does NOT fire `onSave`; result screen receives no save when diagnose is still in-flight (covers the navigate-away-mid-loading hazard).
+  - Cached compression on retry: "Try again" on `server_error` AND on `parse_error` re-fires diagnose with the same compressed photo — compression count stays at 1 across both retry tests (the canonical contract; recompressing on retry would burn battery and waste storage).
+  - Mode toggle: switching identify ↔ diagnose pre-shutter threads `mode` through to `onSave` payload.
+  - Discriminated-union sweep: a single test asserts the Save CTA is hidden on every non-success kind, so a future kind addition that accidentally re-enables Save trips immediately.
+
+### Adversarial review (codex)
+No P1 findings. One P2 (test name accuracy) addressed inline during the build pass. The 23 tests genuinely exercise real component composition rather than mocking the boundaries away — `<PlantCareCameraView>` and `<CameraResultScreen>` are both real, only their module dependencies are mocked. Discriminated-union preservation verified: every kind has its own test path with distinct `testID` + headline assertion. Cached-compression-on-retry asserted in three retry tests (timeout, server, parse_error). Strict-mode latches verified on both shutter (1 takePictureAsync) and diagnose (1 diagnose). Reduce-motion tests assert opacity initialized to 1 with no `Animated.timing` fired.
+
+### V1 scope locks (rejected)
+- Maestro / Detox here — this is jest+RTL integration; E5-013 is the Maestro ticket.
+- A new test runner / library — sticking with jest+RTL+jest-expo.
+- Compressing the discriminated union in any assertion — every kind preserved.
+- Reaching into the api-client internals — only its module export is mocked.
+
+### Notes
+- The integration test file lives at `apps/mobile/src/__tests__/cameraFlow.integration.test.tsx` (not under any single component's `__tests__/` folder) because it spans the camera composite + result screen + diagnose hook + photo-compress helper. The naming convention `*.integration.test.tsx` is intentional — future integration suites should mirror it so they're easy to filter (`bun test integration` if needed). Matches the convention in `apps/backend/test/router.test.ts` for cross-route integration on the backend.
+- The `network → queued` coercion test asserts master-plan line 346 explicitly: `useDiagnoseRequest` coerces api-client `network` errors into `queued` for V1's offline UX — so the `'network'` kind never surfaces to `<CameraResultScreen>` today and the network-variant rendering remains verified at the unit level (E5-009 resolver test) plus this coercion test, not via a live render.
+
 ## [0.1.46.0] - 2026-05-08
 
 E6-005 — `useWateringEngine` v2 + new `useWeather` hook. The pure decision function that drives the A-1 list chip and the A-2 detail chip now optionally consumes a 2-day forecast snapshot and adjusts the species interval before the bias-zone math runs. Three precedence rules are locked structurally rather than checked-at-call-site, so any future refactor that re-orders the branches breaks compilation rather than ships a silent bug: (1) a non-null `override_interval_days` short-circuits everything — weather and `is_indoor` are ignored because the user explicitly chose a custom interval and second-guessing them defeats the override; (2) `is_indoor === true` (the schema default; also the safe fallback when the field is absent on a v1 plant row) skips the weather modifier because indoor microclimates are stable — rain doesn't reach the pot and indoor temperature tracks the thermostat, not the outdoor max; (3) only when `is_indoor === false` AND override is null AND a `weather` snapshot is non-null is the modifier applied. Three threshold values are locked-by-test as exported constants — `PRECIPITATION_THRESHOLD_MM = 5`, `HEAT_THRESHOLD_C = 30`, `MIN_INTERVAL_DAYS = 1`, `MAX_INTERVAL_DAYS = 30` — so a future "let's tune the threshold" change has to be a documented unlock rather than a quiet drift away from the master plan + ticket spec. The cap [1, 30] is structural protection: even though no V1 species + modifier combination naturally reaches it (V1 species table is 5..14 days; modifier range is -1 to +2; realized band is [4, 16]), the clamp prevents a future species-table or threshold change from underflowing a sub-day interval (would constantly fire 'water' for a freshly-watered plant) or overflowing a month-long interval (defeats the engine's purpose; if the species really wants 35 days, the user sets an override). The thresholds are STRICT `>` not `>=` — exactly 5mm precipitation or exactly 30°C heat does NOT trigger; the engine only modifies on values that strictly exceed.
@@ -185,6 +214,7 @@ E5-009 — `<CameraResultScreen>` A-3 error variants. Replaces the E5-008 `// TO
 - The `network` variant rendering is tested via the resolver helper because `useDiagnoseRequest` coerces api-client `network` → `queued` for V1's offline UX (master plan, line 346). The kind is still load-bearing on the union and in the resolver — a future netInfo-aware path or hook change could surface it directly without a screen change.
 - The orchestrator brief mentions "focus moves to the new state on transition (`AccessibilityInfo.setAccessibilityFocus()`)". We chose `announceForAccessibility` instead because `setAccessibilityFocus` requires a `findNodeHandle` lookup that is fragile under React strict-mode and adds noise to the test harness. The screen-reader semantic is identical: VoiceOver/TalkBack reads the editorial headline immediately on transition. Documented in the file header.
 
+<<<<<<< HEAD
 ## [0.1.39.0] - 2026-05-07
 
 E6-002 — `GET /api/weather` Hono route over the E6-001 Open-Meteo wrapper. The route is intentionally a thin adapter: parse + validate the `?lat=&lon=` query params, call `getWeather()`, and translate the wrapper's `GetWeatherResult` discriminated union (`ok` / `cache_hit` / `network_error` / `rate_limited` / `parse_error`) onto HTTP status codes and a stable on-the-wire `WeatherResponse`. Three load-bearing decisions are encoded in the file header and locked by tests: (1) **the discriminated union is NOT collapsed** in HTTP mapping — `ok`/`cache_hit` both 200 (cache state surfaces via the `x-cache: hit|miss` response header, never as a payload field, so a future caching change at this layer can't accidentally break consumers), `rate_limited` 429, `network_error` and `parse_error` both 502 with distinct error messages so ops can tell a transport spike from a schema change; (2) **input validation runs BEFORE the wrapper call** — defense in depth even though the wrapper itself also validates, so an invalid lat/lon never burns a KV read or a network call (the input-validation test asserts this by registering NO Open-Meteo interceptor and relying on `disableNetConnect` to throw if the wrapper got reached); (3) **the api-types separation** for the wire contract — `WeatherResponse` (and tuple-typed `[WeatherDailyEntry, WeatherDailyEntry]` daily array) lives in `packages/api-types/src/index.ts` so mobile consumers get the same compile-time guarantees as the backend, while `WeatherPayload` / `GetWeatherResult` stay internal to the wrapper.
@@ -537,6 +567,8 @@ Two P2s caught + addressed before ship:
 - Off origin/main as a standalone PR (no stack base). Per the v1 autonomous-push lesson: branch is `Anandsatch/e5-add-plant`; the worktree never `git checkout`s sibling branches.
 - The screen does NOT call into `useDiagnoseRequest` despite the brief mentioning "reuse for `mode: 'identify'` requests" — that's a contract change to a public hook surface that V1 scope locks reject. The new `useIdentifyRequest` is the V1-correct factoring.
 
+=======
+>>>>>>> origin/Anandsatch/e5-camera-tests
 ## [0.1.30.0] - 2026-05-05
 
 E5-008 — `<CameraResultScreen>` is the A-3 success path: the rescue moment from capture to diagnose to save. Receives `{ photoUri, mode, plantContext? }` from the camera flow, runs `compressPhoto` (E5-005) once and caches the result, calls `useDiagnoseRequest()` (E5-006) exactly once after compression resolves, renders `<DiagnoseLoadingState>` (E5-007) while in-flight, and on success renders the A-3 card per the approved mockup (`designs/v1-screens-20260430/A-3-camera.png` + `-dark/D-3-camera.png`): hero photo, small all-caps "92% CONFIDENT" tan accent line, Fraunces species/disease label, editorial 2-3 sentence narrative built from `fix_steps`, outline "Get a second opinion" CTA, and filled "Save to {nickname}" primary CTA that hands the full discriminated-union payload + compressed photo URI to `onSave`. **Scope lock:** this ticket ships ONE state — A-3 success. The 4 error / Layer-1 reject / low-confidence / queued / timeout / parse_error variants stay distinct in the type system and in the screen's runtime, but the styled UI for those branches lives in E5-009; until then they render a tiny "We'll improve this in E5-009 (kind: …)" placeholder so the screen never crashes and the discriminated union survives upstream verbatim. Stacks on the foundation primitives (`HeroPhoto`, `EditorialButton`, `DiagnoseLoadingState`, `useDiagnoseRequest`, `compressPhoto`, `useReduceMotion`); auto-rebases to main when those land. 23 new screen tests; mobile suite 376 (was 353).
@@ -569,6 +601,7 @@ E5-008 — `<CameraResultScreen>` is the A-3 success path: the rescue moment fro
 - The A-3 mockup "Save to Steve" CTA copy is data-driven via the `plantNickname` prop — supplied by the parent (Plant Detail screen for the rescue path, FAB long-press flow for "Quick diagnose"). The fallback "Save to my plants" copy covers the no-plant-context branch (Quick diagnose path) without changing the screen's signature when E5-011 ships.
 - **AppState listener is a no-op on resume by design.** The diagnose hook's mounted-ref + race-by-call-order guards already protect against stale results; the loading-state bucket clock is anchored at compression-resolve time inside `<DiagnoseLoadingState>` itself (its `startedAtRef`), so the user who backgrounds at the 12-second mark and resumes at the 18-second mark sees the bucket continue from where it was — not reset to "Looking closely…". The listener is registered so future telemetry / analytics can hook in via the same subscription contract.
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 ## [0.1.29.0] - 2026-05-05
 
@@ -697,6 +730,8 @@ Two P2 findings — both addressed before ship:
 >>>>>>> origin/Anandsatch/e10-dark-primitives
 =======
 >>>>>>> origin/Anandsatch/e6-watering-engine-v2
+=======
+>>>>>>> origin/Anandsatch/e5-camera-tests
 ## [0.1.26.0] - 2026-05-04
 
 E5-004 — `<CameraView>` wraps `expo-camera` with permission-gated rendering (composes `CameraPermissionPrePrompt` from E5-003), a top mode-toggle pill (identify / diagnose), and a bottom shutter button. The mode prop discriminates downstream behavior in E5-008 (`CameraResultScreen`) and E5-010 (`AddPlantScreen`). Stacks on `Anandsatch/e5-camera-pre-prompt` (PR #18); auto-rebases to main when E5-003 lands. The wrapper is exported as `PlantCareCameraView` from `apps/mobile/src/components/CameraView.tsx` because `expo-camera` already exports a class component named `CameraView` from its modern API — the file name keeps symmetry with the master-plan spec, the export name avoids the import collision.
