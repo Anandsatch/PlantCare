@@ -369,6 +369,11 @@ export async function selectReadyForRetry(
  * defeats the point of having a CRUD layer. Silent + idempotent is
  * SQLite-idiomatic and matches the master plan's tolerance for retried
  * drainer runs.
+ *
+ * For drainers that need to know whether they actually claimed the row
+ * (defense-in-depth against multiple drainer instances), use
+ * `claimInFlight` instead — it returns a boolean derived from the
+ * pre-state inside an exclusive transaction.
  */
 export async function markInFlight(
   db: QueueExecutor,
@@ -378,6 +383,46 @@ export async function markInFlight(
     "UPDATE sync_queue SET status = 'in_flight' WHERE id = ? AND status = 'pending'",
     [id],
   );
+}
+
+/**
+ * Atomic claim-style transition: pending → in_flight, returning whether
+ * the caller actually flipped the row. Used by `SyncDrainer` so a sibling
+ * drainer that already claimed the same row results in `false` and the
+ * second drainer skips dispatch — closes a P2 race codex flagged on the
+ * "two drainer instances see the same pending row" path.
+ *
+ * V1 ships a single drainer instance per app, so this is defense-in-depth.
+ * The race could in theory still surface if two app processes share an
+ * SQLite file (not a V1 deployment shape) or if a future ticket spawns a
+ * sibling drainer (e.g. a notification-extension drainer). Either way,
+ * the cost of the extra transaction is small and the contract is clearer.
+ *
+ * The read+write run inside `withExclusiveTransactionAsync` so two
+ * concurrent claimers cannot both observe pre=pending and both return
+ * true. Returns `true` if the row transitioned, `false` if it was
+ * non-pending (already in_flight, done, failed, or missing).
+ */
+export async function claimInFlight(
+  db: QueueExecutor,
+  id: string,
+): Promise<boolean> {
+  let claimed = false;
+  await db.withExclusiveTransactionAsync(async () => {
+    const row = await db.getFirstAsync<{ status: QueueStatus }>(
+      'SELECT status FROM sync_queue WHERE id = ?',
+      [id],
+    );
+    if (!row || row.status !== 'pending') {
+      return;
+    }
+    await db.runAsync(
+      "UPDATE sync_queue SET status = 'in_flight' WHERE id = ? AND status = 'pending'",
+      [id],
+    );
+    claimed = true;
+  });
+  return claimed;
 }
 
 /**

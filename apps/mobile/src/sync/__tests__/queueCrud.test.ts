@@ -29,6 +29,7 @@ import {
   BACKOFF_SCHEDULE_MS,
   MAX_ATTEMPTS,
   TTL_MS,
+  claimInFlight,
   enqueueRequest,
   markDone,
   markFailedTerminal,
@@ -671,6 +672,50 @@ describe('sweepStaleEntries (7-day TTL)', () => {
     const result = await sweepStaleEntries(q, { nowMs: now });
     expect(result.deleted).toBe(1);
     expect(rowOf(raw, enq.id)).toBeUndefined();
+  });
+});
+
+describe('claimInFlight (atomic claim variant)', () => {
+  it('returns true and flips pending → in_flight on first call', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    const claimed = await claimInFlight(q, r.id);
+    expect(claimed).toBe(true);
+    expect(rowOf(raw, r.id)!.status).toBe('in_flight');
+  });
+
+  it('returns false on second call (already in_flight)', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    const first = await claimInFlight(q, r.id);
+    const second = await claimInFlight(q, r.id);
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    // Status still in_flight; no double-flip.
+    expect(rowOf(raw, r.id)!.status).toBe('in_flight');
+  });
+
+  it('returns false on done / failed / missing rows without mutation', async () => {
+    const { raw, q } = await freshDb();
+    const a = await enqueueRequest(q, { kind: 'diagnose', payload: 'a', nowMs: 1 });
+    const b = await enqueueRequest(q, { kind: 'diagnose', payload: 'b', nowMs: 1 });
+    raw.prepare("UPDATE sync_queue SET status='done' WHERE id = ?").run(a.id);
+    raw.prepare("UPDATE sync_queue SET status='failed' WHERE id = ?").run(b.id);
+    expect(await claimInFlight(q, a.id)).toBe(false);
+    expect(await claimInFlight(q, b.id)).toBe(false);
+    expect(await claimInFlight(q, 'no-such-id')).toBe(false);
+    // States preserved.
+    expect(rowOf(raw, a.id)!.status).toBe('done');
+    expect(rowOf(raw, b.id)!.status).toBe('failed');
+  });
+
+  it('two concurrent claims on the same pending row: exactly one returns true', async () => {
+    const { raw, q } = await freshDb();
+    const r = await enqueueRequest(q, { kind: 'diagnose', payload: 'p', nowMs: 1 });
+    const [a, b] = await Promise.all([claimInFlight(q, r.id), claimInFlight(q, r.id)]);
+    const wins = [a, b].filter(Boolean).length;
+    expect(wins).toBe(1);
+    expect(rowOf(raw, r.id)!.status).toBe('in_flight');
   });
 });
 
