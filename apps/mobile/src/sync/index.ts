@@ -32,3 +32,8 @@ export {
   type SweepStaleInput,
   type SweepStaleResult,
 } from './queueCrud';
+  useNetworkActivity,
+  type NetworkActivitySnapshot,
+  type NetworkStatus,
+  type UseNetworkActivityConfig,
+} from './useNetworkActivity';
