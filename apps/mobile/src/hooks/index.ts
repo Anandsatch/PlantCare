@@ -19,3 +19,13 @@ export {
   type UseConsultRequestConfig,
   type UseConsultRequestReturn,
 } from './useConsultRequest';
+export {
+  usePersistNote,
+  payloadToPersistInput,
+  subscribeToNoteEvents,
+  type PersistNoteInput,
+  type PersistNoteResult,
+  type PersistNoteStatus,
+  type UsePersistNoteConfig,
+  type UsePersistNoteReturn,
+} from './usePersistNote';
