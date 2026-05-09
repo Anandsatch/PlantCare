@@ -45,6 +45,7 @@ export type {
   AddNoteSavedPayload,
   AddNoteSheetProps,
 } from './AddNoteSheet';
+export {
   EditPlantDetailsSheet,
   HELPER_COPY as EDIT_DETAILS_HELPER_COPY,
   MAX_INTERVAL_DAYS,

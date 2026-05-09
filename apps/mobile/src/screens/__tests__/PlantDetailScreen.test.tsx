@@ -1,21 +1,23 @@
 /**
- * PlantDetailScreen tests (E4-005).
+ * PlantDetailScreen tests (E4-005 + E4-006 wiring).
  *
- * 18+ tests covering the prop contract, the watering-engine integration, the
+ * Covers the prop contract, the watering-engine integration, the
  * E4-007 `noteEnabled` hidden-button default, the reading-order a11y contract,
- * the dark-theme token swap, and the sub-day-precision `formatLastWatered`
- * regression that PlantCard / PhotoTimeline already pin.
+ * the dark-theme token swap, the sub-day-precision `formatLastWatered`
+ * regression that PlantCard / PhotoTimeline already pin, and the E4-006
+ * Mark watered mutation wiring (mutate → onMarkWatered re-query callback,
+ * pending-state button disable, success toast, error toast).
  *
- * `useWateringEngine` and `useTheme` are mocked: this is a UI test, not a
- * SQLite test — the engine has its own test file (E4-002) and the theme has
- * its own (E2-001).
+ * `useWateringEngine`, `useTheme`, `useReduceMotion`, and `useMarkWatered`
+ * are mocked: this is a UI integration test, not a SQLite test — each
+ * mocked hook has its own test file.
  */
 import { darkTheme, lightTheme } from '@plantcare/theme';
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
-import { PhotoTimeline } from '../../components/PhotoTimeline';
+import { PhotoTimeline, type PhotoEntry } from '../../components/PhotoTimeline';
 import { WateringLedger } from '../../components/WateringLedger';
-import type { PlantDetailScreenProps } from '../PlantDetailScreen';
+import { useMarkWatered, type MarkWateredResult } from '../../hooks/useMarkWatered';
 import { useReduceMotion } from '../../hooks/useReduceMotion';
 import { useTheme } from '../../hooks/useTheme';
 import { useWateringEngine } from '../../hooks/useWateringEngine';
@@ -38,6 +40,9 @@ jest.mock('../../hooks/useWateringEngine', () => ({
 jest.mock('../../hooks/useReduceMotion', () => ({
   useReduceMotion: jest.fn(),
 }));
+jest.mock('../../hooks/useMarkWatered', () => ({
+  useMarkWatered: jest.fn(),
+}));
 
 const mockedUseTheme = useTheme as unknown as jest.Mock<
   ReturnType<typeof useTheme>,
@@ -48,6 +53,37 @@ const mockedEngine = useWateringEngine as unknown as jest.Mock<
   [Parameters<typeof useWateringEngine>[0]]
 >;
 const mockedReduceMotion = useReduceMotion as unknown as jest.Mock<boolean, []>;
+const mockedUseMarkWatered = useMarkWatered as unknown as jest.Mock<
+  ReturnType<typeof useMarkWatered>,
+  [string]
+>;
+
+/**
+ * Default mock of `useMarkWatered`. Returns an idle hook whose `mutate`
+ * resolves `{ ok: true, row }` so `onMarkWatered` (re-query trigger) fires
+ * immediately. Tests that need to drive specific transitions override the
+ * mock per-test.
+ */
+function makeMarkWateredMock(opts?: {
+  status?: 'idle' | 'pending' | 'ok' | 'error';
+  result?: MarkWateredResult;
+}): ReturnType<typeof useMarkWatered> {
+  const result: MarkWateredResult = opts?.result ?? {
+    ok: true,
+    row: {
+      id: 'w-1',
+      plant_id: 'plant-1',
+      watered_at: 1_700_000_000_000,
+      source: 'user',
+      note: null,
+    },
+  };
+  return {
+    mutate: jest.fn().mockResolvedValue(result),
+    status: opts?.status ?? 'idle',
+    error: null,
+  };
+}
 
 // ---- Fixtures --------------------------------------------------------------
 
@@ -85,12 +121,14 @@ describe('PlantDetailScreen', () => {
     mockedUseTheme.mockReturnValue(lightTheme);
     mockedEngine.mockReturnValue('water');
     mockedReduceMotion.mockReturnValue(false);
+    mockedUseMarkWatered.mockReturnValue(makeMarkWateredMock());
   });
 
   afterEach(() => {
     mockedUseTheme.mockReset();
     mockedEngine.mockReset();
     mockedReduceMotion.mockReset();
+    mockedUseMarkWatered.mockReset();
   });
 
   it('renders species headline + italic curly-quoted nickname + last-watered subline', () => {
@@ -117,11 +155,11 @@ describe('PlantDetailScreen', () => {
 
   it('uses StatusChip whose type tracks useWateringEngine across all 4 states', () => {
     const plant = makePlant();
-    const baseProps: PlantDetailScreenProps = {
+    const baseProps = {
       plant,
       heroPhotoUri: null,
-      wateringEvents: [],
-      photos: [],
+      wateringEvents: [] as { wateredAtMs: number }[],
+      photos: [] as PhotoEntry[],
       onMarkWatered: jest.fn(),
       onEditDetails: jest.fn(),
       nowMs: NOW,
@@ -192,11 +230,13 @@ describe('PlantDetailScreen', () => {
     expect(getByTestId('screen-photos')).toBeOnTheScreen();
   });
 
-  it('"Mark watered" tap fires onMarkWatered (not the others)', () => {
+  it('"Mark watered" tap fires the mutate then onMarkWatered re-query (not the others)', async () => {
     const plant = makePlant();
     const onMarkWatered = jest.fn();
     const onEditDetails = jest.fn();
     const onAddNote = jest.fn();
+    const mark = makeMarkWateredMock();
+    mockedUseMarkWatered.mockReturnValue(mark);
     const { getByTestId } = render(
       <PlantDetailScreen
         plant={plant}
@@ -211,7 +251,13 @@ describe('PlantDetailScreen', () => {
         testID="screen"
       />,
     );
-    fireEvent.press(getByTestId('screen-mark-watered'));
+    await act(async () => {
+      fireEvent.press(getByTestId('screen-mark-watered'));
+    });
+    // mutate fires synchronously on press; onMarkWatered is the re-query
+    // callback fired AFTER the mutate resolves with `ok: true`.
+    expect(mark.mutate).toHaveBeenCalledTimes(1);
+    expect(mark.mutate).toHaveBeenCalledWith({ source: 'user' });
     expect(onMarkWatered).toHaveBeenCalledTimes(1);
     expect(onEditDetails).not.toHaveBeenCalled();
     expect(onAddNote).not.toHaveBeenCalled();
@@ -544,9 +590,11 @@ describe('PlantDetailScreen', () => {
     warn.mockRestore();
   });
 
-  it('mark-watered loading state shows the activity indicator (no double-fires)', () => {
+  it('mark-watered loading state (parent prop) shows the activity indicator (no double-fires)', () => {
     const plant = makePlant();
     const onMarkWatered = jest.fn();
+    const mark = makeMarkWateredMock();
+    mockedUseMarkWatered.mockReturnValue(mark);
     const { getByTestId } = render(
       <PlantDetailScreen
         plant={plant}
@@ -562,9 +610,175 @@ describe('PlantDetailScreen', () => {
     );
     // EditorialButton renders an ActivityIndicator under `<testID>-loading`.
     expect(getByTestId('screen-mark-watered-loading')).toBeOnTheScreen();
-    // Tap is inert during loading.
+    // Tap is inert during loading: neither the in-screen mutate fires nor
+    // the parent re-query callback.
     fireEvent.press(getByTestId('screen-mark-watered'));
+    expect(mark.mutate).not.toHaveBeenCalled();
     expect(onMarkWatered).not.toHaveBeenCalled();
+  });
+
+  // === E4-006 wiring tests =================================================
+
+  it('hook status="pending" disables the Mark watered button (Layer 2 of triple-defense)', () => {
+    const mark = makeMarkWateredMock({ status: 'pending' });
+    mockedUseMarkWatered.mockReturnValue(mark);
+    const onMarkWatered = jest.fn();
+    const { getByTestId } = render(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={onMarkWatered}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    // Activity indicator visible, button disabled, press is a no-op.
+    expect(getByTestId('screen-mark-watered-loading')).toBeOnTheScreen();
+    fireEvent.press(getByTestId('screen-mark-watered'));
+    expect(mark.mutate).not.toHaveBeenCalled();
+    expect(onMarkWatered).not.toHaveBeenCalled();
+  });
+
+  it('after mutate ok, the toast banner "Watered today" appears (sage info)', async () => {
+    const mark = makeMarkWateredMock();
+    mockedUseMarkWatered.mockReturnValue(mark);
+    const { getByTestId, queryByTestId } = render(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={jest.fn()}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    // Toast not present before tap.
+    expect(queryByTestId('screen-mark-watered-toast')).toBeNull();
+    await act(async () => {
+      fireEvent.press(getByTestId('screen-mark-watered'));
+    });
+    expect(getByTestId('screen-mark-watered-toast')).toBeOnTheScreen();
+  });
+
+  it('error path renders the warn toast "Couldn\'t save — try again"', async () => {
+    const mark = makeMarkWateredMock({
+      result: { ok: false, kind: 'error', error: new Error('insert failed') },
+    });
+    mockedUseMarkWatered.mockReturnValue(mark);
+    const onMarkWatered = jest.fn();
+    const { getByTestId, queryByTestId } = render(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={onMarkWatered}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    await act(async () => {
+      fireEvent.press(getByTestId('screen-mark-watered'));
+    });
+    await waitFor(() => {
+      expect(getByTestId('screen-mark-watered-error-toast')).toBeOnTheScreen();
+    });
+    // Re-query callback is NOT fired on error — the parent should not
+    // refetch because the row never landed.
+    expect(onMarkWatered).not.toHaveBeenCalled();
+    // Sanity: no success toast.
+    expect(queryByTestId('screen-mark-watered-toast')).toBeNull();
+  });
+
+  it('debounced result fires no toast and does not invoke the parent re-query', async () => {
+    const mark = makeMarkWateredMock({
+      result: { ok: false, kind: 'debounced' },
+    });
+    mockedUseMarkWatered.mockReturnValue(mark);
+    const onMarkWatered = jest.fn();
+    const { getByTestId, queryByTestId } = render(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={onMarkWatered}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    await act(async () => {
+      fireEvent.press(getByTestId('screen-mark-watered'));
+    });
+    expect(onMarkWatered).not.toHaveBeenCalled();
+    expect(queryByTestId('screen-mark-watered-toast')).toBeNull();
+    expect(queryByTestId('screen-mark-watered-error-toast')).toBeNull();
+  });
+
+  it('useMarkWatered is called with plant.id (the mutation is scoped to the rendered plant)', () => {
+    const plant = makePlant({ id: 'plant-special' });
+    render(
+      <PlantDetailScreen
+        plant={plant}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={jest.fn()}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    expect(mockedUseMarkWatered).toHaveBeenCalledWith('plant-special');
+  });
+
+  it('after mutate ok, the status chip reflects the new state (engine re-derives via the bus, mocked here)', async () => {
+    // Before tap, engine returns 'water'. After tap (and conceptually after
+    // the bus carries the optimistic event), the engine returns 'skip' —
+    // simulating the chip flip the bus produces in the real wiring.
+    const mark = makeMarkWateredMock();
+    mockedUseMarkWatered.mockReturnValue(mark);
+    mockedEngine.mockReturnValue('water');
+    const { getByTestId, getByLabelText, rerender } = render(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={jest.fn()}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    expect(getByLabelText('Water today')).toBeOnTheScreen();
+
+    await act(async () => {
+      fireEvent.press(getByTestId('screen-mark-watered'));
+    });
+    // Simulate the engine flipping after the bus event (the engine is
+    // mocked here; the real wiring is exercised in useWateringEngine tests).
+    mockedEngine.mockReturnValue('skip');
+    rerender(
+      <PlantDetailScreen
+        plant={makePlant()}
+        heroPhotoUri={null}
+        wateringEvents={[]}
+        photos={[]}
+        onMarkWatered={jest.fn()}
+        onEditDetails={jest.fn()}
+        nowMs={NOW}
+        testID="screen"
+      />,
+    );
+    expect(getByLabelText('Skip watering')).toBeOnTheScreen();
   });
 });
 

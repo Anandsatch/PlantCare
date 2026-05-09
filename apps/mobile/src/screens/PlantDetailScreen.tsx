@@ -80,12 +80,40 @@
  * on `useReduceMotion()` without a refactor. Today the value is captured but
  * unused; documented so the next ticket doesn't strip it.
  *
+ * # E4-006 wiring — `useMarkWatered` lives inside this screen.
+ *
+ * E4-005 left "Mark watered" as a parent-supplied `onMarkWatered()`
+ * callback. E4-006 wires the SQLite INSERT directly inside the screen via
+ * `useMarkWatered(plant.id)` so the chip + ledger flip in-place without
+ * the parent threading a mutation closure through navigation. The parent's
+ * `onMarkWatered` callback is preserved as the **re-query trigger**:
+ * after a successful INSERT we call it so the parent re-reads
+ * `wateringEvents` and re-passes the prop. The status chip
+ * (`useWateringEngine`) flips synchronously via the optimistic event on
+ * the bus; the last-watered subline flips on the next prop update from
+ * the parent's re-query. Both layers are correct after the sequence
+ * settles.
+ *
+ * The "Mark watered" tap therefore performs three sequenced actions:
+ *   1. `mutate({ source: 'user' })` — emits optimistic, INSERTs, emits
+ *      commit. Internal to the hook.
+ *   2. On `ok`, calls `onMarkWatered?.()` so the parent re-queries
+ *      `wateringEvents` for the ledger row and last-watered subline.
+ *   3. The screen surfaces a sage `<ToastBanner type='info'>` ("Watered
+ *      today") for 4s. On error, a tan `<ToastBanner type='warn'>` per
+ *      the master plan A-2 spec ("Couldn't save — try again").
+ *
+ * The button's `loading` prop is driven by `mutate`'s status === 'pending'
+ * (OR'd with the optional `markWateredLoading` prop the parent could
+ * still pass for orchestrated flows; the parent prop wins so a future
+ * caller can force the spinner). Same Layer 2 of the triple-defense
+ * against double-tap (Layer 1 = EditorialButton same-tick latch; Layer 3
+ * = `useMarkWatered`'s 1s debounce ref).
+ *
  * # V1 scope locks (rejected at file design).
  *
- * - No SQLite mutation here. "Mark watered" calls `onMarkWatered()`; E4-006
- *   owns the watering_events INSERT. "Edit details" calls `onEditDetails()`;
- *   E6-006 owns the bottom sheet. "Add note" calls `onAddNote()`; E8-005
- *   owns the notes table write.
+ * - "Edit details" calls `onEditDetails()`; E6-006 owns the bottom sheet.
+ *   "Add note" calls `onAddNote()`; E8-005 owns the notes table write.
  * - No date-fns / dayjs / luxon / Temporal. The "last watered N days ago"
  *   line uses calendar-day deltas via the same `localDayDelta` strategy as
  *   PhotoTimeline, inlined here because lifting into a shared util crosses
@@ -96,16 +124,18 @@
  * - No backend changes. Parent fetches; this screen renders.
  */
 import { fonts } from '@plantcare/theme';
-import { type ReactElement } from 'react';
+import { useCallback, useState, type ReactElement } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import {
   EditorialButton,
   HeroPhoto,
   StatusChip,
+  ToastBanner,
 } from '../components/primitives';
 import { PhotoTimeline, type PhotoEntry } from '../components/PhotoTimeline';
 import { WateringLedger, type WateringEvent } from '../components/WateringLedger';
+import { useMarkWatered } from '../hooks/useMarkWatered';
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
 import { useWateringEngine } from '../hooks/useWateringEngine';
@@ -228,8 +258,17 @@ export type PlantDetailScreenProps = {
   wateringEvents: WateringEvent[];
   /** Up to N photos (component shows the 4 most-recent). */
   photos: PhotoEntry[];
-  /** Fired when the user taps "Mark watered". E4-006 wires the mutation. */
-  onMarkWatered: () => void;
+  /**
+   * Fired AFTER the watering INSERT commits (E4-006). The screen owns the
+   * SQLite write via `useMarkWatered(plant.id)` internally; this callback
+   * is the parent's re-query trigger — typically `() =>
+   * refetchWateringEvents(plant.id)` so the ledger + last-watered subline
+   * pick up the new row on the next render. Optional because the in-screen
+   * `useWateringEngine` already re-derives via the bus, so for screens
+   * that don't need the ledger to mirror the new row immediately the
+   * callback can be omitted.
+   */
+  onMarkWatered?: () => void;
   /** Fired when the user taps "Edit details". E6-006 wires the bottom sheet. */
   onEditDetails: () => void;
   /**
@@ -244,7 +283,13 @@ export type PlantDetailScreenProps = {
    * this to `true` at the parent.
    */
   noteEnabled?: boolean;
-  /** "Mark watered" loading state — E4-006 will pass `true` while the INSERT is in flight. */
+  /**
+   * Optional override for the "Mark watered" button's loading state.
+   * Defaults to the in-screen `useMarkWatered.status === 'pending'`. Pass
+   * `true` to force the spinner (e.g. while the parent runs its own
+   * follow-up work after `onMarkWatered` returns). Parent prop wins —
+   * `markWateredLoading || internalPending`.
+   */
   markWateredLoading?: boolean;
   /**
    * Test seam for `useWateringEngine` consumption — defaults to `Date.now()`
@@ -295,6 +340,48 @@ export function PlantDetailScreen({
     species_slug: plant.species_slug,
     override_interval_days: plant.override_interval_days,
   });
+
+  // E4-006: in-screen mutation. `mutate` emits the optimistic event
+  // synchronously, then INSERTs, then emits commit/rollback. The chip
+  // re-derives via the bus; the ledger re-derives via the parent's
+  // re-query (triggered by `onMarkWatered` after `ok`).
+  const { mutate, status: mutateStatus } = useMarkWatered(plant.id);
+
+  // Toast lifecycle. `null` means no toast; 'ok'/'error' selects copy + tone.
+  // `<ToastBanner>` already owns its own auto-dismiss timer (4s default for
+  // info/warn); we just clear our state when it fires onDismiss so a
+  // subsequent mutate can show a fresh banner instead of stacking on top
+  // of the previous one.
+  const [toastKind, setToastKind] = useState<'ok' | 'error' | null>(null);
+
+  const handleMarkWatered = useCallback(async () => {
+    // Pre-flight: if a previous mutate is still pending, the EditorialButton
+    // is already disabled (loading=true) and the in-hook 1s debounce is
+    // armed, so this branch is mostly defensive — a programmatic call from
+    // a test harness, or two pressables wired to the same handler.
+    if (mutateStatus === 'pending') return;
+    const result = await mutate({ source: 'user' });
+    if (result.ok) {
+      setToastKind('ok');
+      // Tell the parent to re-read wateringEvents so the ledger + subline
+      // mirror the new row. `useWateringEngine` already flipped via the
+      // bus; this closes the loop on the prop-driven layers.
+      onMarkWatered?.();
+    } else if (result.kind === 'error') {
+      setToastKind('error');
+    }
+    // 'debounced' results show no toast — the user's first mutate is
+    // already producing UI feedback, and a second toast would be noise.
+  }, [mutate, mutateStatus, onMarkWatered]);
+
+  const dismissToast = useCallback(() => {
+    setToastKind(null);
+  }, []);
+
+  // Loading state for the button. Parent prop wins (a forced-loading flow
+  // would otherwise be undermined by an in-hook 'idle'); otherwise track
+  // the internal status.
+  const buttonLoading = markWateredLoading || mutateStatus === 'pending';
 
   const headline = resolveSpeciesHeadline(plant);
 
@@ -411,8 +498,8 @@ export function PlantDetailScreen({
         <EditorialButton
           variant="filled"
           label="Mark watered"
-          onPress={onMarkWatered}
-          loading={markWateredLoading}
+          onPress={handleMarkWatered}
+          loading={buttonLoading}
           testID={testID ? `${testID}-mark-watered` : undefined}
         />
         <View style={styles.actionGap} />
@@ -436,6 +523,26 @@ export function PlantDetailScreen({
               testID={testID ? `${testID}-add-note` : undefined}
             />
           </>
+        ) : null}
+        {toastKind === 'ok' ? (
+          <View style={styles.toastWrap}>
+            <ToastBanner
+              type="info"
+              message="Watered today"
+              onDismiss={dismissToast}
+              testID={testID ? `${testID}-mark-watered-toast` : undefined}
+            />
+          </View>
+        ) : null}
+        {toastKind === 'error' ? (
+          <View style={styles.toastWrap}>
+            <ToastBanner
+              type="warn"
+              message="Couldn't save — try again"
+              onDismiss={dismissToast}
+              testID={testID ? `${testID}-mark-watered-error-toast` : undefined}
+            />
+          </View>
         ) : null}
       </View>
 
@@ -500,5 +607,8 @@ const styles = StyleSheet.create({
   },
   actionGap: {
     height: 12,
+  },
+  toastWrap: {
+    marginTop: 12,
   },
 });

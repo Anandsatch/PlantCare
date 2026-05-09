@@ -18,6 +18,7 @@ export {
   type UseIdentifyRequestConfig,
   type UseIdentifyRequestReturn,
 } from './useIdentifyRequest';
+export {
   useConsultRequest,
   type ConsultInput,
   type ConsultPlantContext,
@@ -25,6 +26,7 @@ export {
   type UseConsultRequestConfig,
   type UseConsultRequestReturn,
 } from './useConsultRequest';
+export {
   useWeather,
   type UseWeatherConfig,
   type UseWeatherReturn,

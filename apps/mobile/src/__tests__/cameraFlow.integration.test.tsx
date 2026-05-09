@@ -186,6 +186,8 @@ function makeApiClient(
     diagnose: diagnoseSpy as never,
     consult: jest.fn() as never,
     review: jest.fn() as never,
+
+    weather: jest.fn() as never,
   };
   return { client, diagnoseSpy };
 }
@@ -838,6 +840,8 @@ describe('Camera flow integration', () => {
       diagnose: diagnoseImpl as never,
       consult: jest.fn() as never,
       review: jest.fn() as never,
+
+      weather: jest.fn() as never,
     };
     const { spy: compressSpy } = makeCompressImpl();
     const onSave = jest.fn();

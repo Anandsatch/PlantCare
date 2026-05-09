@@ -31,6 +31,8 @@ function makeApiClient(
     diagnose: jest.fn() as never,
     consult: consultSpy as never,
     review: jest.fn() as never,
+
+    weather: jest.fn() as never,
   };
   return { client, consultSpy };
 }

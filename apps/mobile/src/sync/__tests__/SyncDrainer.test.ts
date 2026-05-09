@@ -191,6 +191,7 @@ function makeMockApi(): MockApi {
     diagnose: (input) => dispatch('diagnose', input) as Promise<ApiResult<never>>,
     consult: (input) => dispatch('consult', input) as Promise<ApiResult<never>>,
     review: (input) => dispatch('review', input) as Promise<ApiResult<never>>,
+    weather: (input) => dispatch('weather', input) as Promise<ApiResult<never>>,
   };
 
   return {
