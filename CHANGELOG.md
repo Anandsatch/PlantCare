@@ -2,6 +2,8 @@
 
 All notable changes to PlantCare will be documented in this file.
 
+
+
 ## [0.1.47.0] - 2026-05-08
 
 E7-006 — "Tap to retry" surface for failed sync_queue rows. Stacks on E7-002's `SyncDrainer` (which itself stacks on E7-001's CRUD). Ships the data hook (`useFailedQueue`) + the presentation primitive (`QueueRetryBanner`) + a CRUD addition (`resetForRetry` + `selectFailedRows`) wired through the same exclusive-transaction discipline as `claimInFlight`. The banner is NOT mounted in any screen in this PR — that's a future ticket; today the surface is composable.
@@ -354,9 +356,6 @@ One P2 caught + addressed before ship:
 - **Why suppress the initial `'resolving' → first-real-status` `onChange`**: the drainer cares about real transitions (offline→online to start a drain; background→active to resume). The "hook just woke up" edge isn't a real change in the world — it's a measurement artifact. Suppressing keeps the contract clean: every `onChange` fire corresponds to a user-visible event.
 - **Why iOS `'inactive'` maps to `'background'` (and not `'active'`)**: `'inactive'` fires during the app-switcher slide-up, incoming-call peek, and Control Center pull-down. Treating these as `'active'` would let the drainer fire mid-gesture (battery + UX cost); treating as `'background'` is the conservative choice. When the user dismisses the gesture without leaving, AppState fires `'active'` again and we transition back. Net: one spurious background→active round-trip during a brief peek, smoothed by the debounce on the drainer side (E7-002).
 - **Why `isInternetReachable === null` is treated as online (not offline)**: `null` is the "probe in flight" state on a fresh subscribe. Treating it as offline would briefly flap `offline_active` on every launch even on a connected device. The conservative-for-flapping choice is to assume online until the probe disconnects; the drainer's first fetch will discover the truth either way.
-
-=======
->>>>>>> origin/Anandsatch/e7-tap-retry
 ## [0.1.38.0] - 2026-05-07
 
 E7-001 — `sync_queue` CRUD layer. The persistence root for offline-mode LLM requests: typed `enqueueRequest` / `selectReadyForRetry` / `markInFlight` / `markDone` / `markFailedTerminal` / `scheduleBackoff` / `sweepStaleEntries` over the `sync_queue` table that E2-002 created. State machine matches the master plan: `pending → in_flight → done | failed | back-to-pending` with the locked backoff schedule (1m / 5m / 30m / 2h / 8h / fail). 7-day TTL sweeper deletes only terminal rows (`done` / `failed`) — pending and in_flight are preserved regardless of age so a long-offline user does not lose queued work. UTC ms only; no calendar math (DST/IDL contract enforced by static source-grep tests, mirroring `useWateringEngine` E4-002). E7-002 (drainer) and E7-004 (hook wiring) compose on top; `useDiagnoseRequest` is intentionally untouched in this PR — each LLM hook still coerces `network → queued` at the UI layer until E7-004.
@@ -774,6 +773,51 @@ Two P2 findings — both addressed before ship:
 >>>>>>> origin/Anandsatch/e5-camera-tests
 =======
 >>>>>>> origin/Anandsatch/e7-tap-retry
+=======
+## [0.1.33.0] - 2026-05-06
+
+E4-005 — `<PlantDetailScreen>` is the A-2 plant-detail composite. Hero photo + Fraunces species headline + italic curly-quoted nickname + small-caps last-watered subline + `<StatusChip>` driven by `useWateringEngine()` + `<WateringLedger>` 7-day row + `<EditorialButton>` action stack ("Mark watered" filled, "Edit details" outline, "Add note" outline behind a feature flag) + `<PhotoTimeline>` 4-thumbnail row, in that document order. The screen is a pure composite: it does not own SQLite reads (parent passes `plant`, `heroPhotoUri`, `wateringEvents`, `photos`); it does not own mutations (`onMarkWatered`, `onEditDetails`, `onAddNote` are all parent-supplied callbacks; E4-006 / E6-006 / E8-005 own the persistence). Stacks on origin/main (E4-001 + E4-003 + E4-004 + E2-007 + E2-008 + E2-010 all already merged). 30 new tests; mobile suite at 383.
+
+### Added
+- `apps/mobile/src/screens/PlantDetailScreen.tsx` — the composite. Props: `{ plant: Plant; heroPhotoUri: string | null; wateringEvents: WateringEvent[]; photos: PhotoEntry[]; onMarkWatered: () => void; onEditDetails: () => void; onAddNote?: () => void; noteEnabled?: boolean; markWateredLoading?: boolean; nowMs?: number; testID?: string }`. The screen reads `useWateringEngine({ id, species_slug, override_interval_days })` to drive the chip type; it derives `lastWateredAtMs` from a single O(n) max-scan over `wateringEvents` and feeds `formatLastWatered(lastWateredAtMs, nowMs)` (calendar-day-walk via `localDayDelta`, same algorithm as `PhotoTimeline.formatRelativeDate`) into the editorial small-caps subline. Hero photo accessibilityLabel composes as `Photo of {species_label-or-slug}{nickname ? `, ${nickname}` : ''}` per master plan A-2. The screen is wrapped in a `ScrollView` so deep gardens (many photos, future weekly-review threading) don't force layout shrinkage; root `flex: 1` on the scroll container + the cream `theme.colors.bg`. Two pure helpers — `formatLastWatered` and `resolveSpeciesHeadline` — are exported alongside the component for test coverage and future re-use (e.g. PlantsListScreen if the headline needs to render the same way).
+- `apps/mobile/src/screens/__tests__/PlantDetailScreen.test.tsx` — 30 tests across full-data render, status chip across all 4 engine states (water / skip / check_soil), 7-day ledger composition, 4-thumbnail timeline composition, mark-watered fires on tap (and isolation: doesn't fire edit-details / add-note), edit-details fires on tap (and isolation), `noteEnabled=false` (default) fully omits the Add note button from the tree (not just visually hidden — so VoiceOver can't reach it; E4-007 contract), `noteEnabled=true` with `onAddNote` renders + fires, `noteEnabled=true` without `onAddNote` still renders + presses become a no-op (codex P2 fix), reduce-motion hook is consumed (future-animation seam), dark theme tokens swap on the species headline, every interactive has `accessibilityRole='button'` + label, header reading order has 3 sequential VO stops (species `header` role, nickname-with-quote-stripped label, last-watered Text) — the wrapping View is NOT `accessible={true}` (rationale: collapsing breaks rotor "by-header" navigation and disables RTL queries), empty plant state — no photos: PhotoTimeline empty copy renders, empty plant state — never watered: chip says "Check soil" + ledger empty caption + headline reads "Not watered yet", **sub-day-precision regression: 3d 12h ago → "Last watered 3 days ago"** (same invariant as PlantCard / PhotoTimeline; floors-to-calendar-days, never to 4 or sub-day-precision), hero photo a11y label composes species + nickname per master plan, headline `accessibilityRole='header'`, plant with no nickname omits both the quoted Text and the nickname comma in the composed a11y label, mark-watered loading shows the ActivityIndicator + presses are inert. Pure helper coverage: `formatLastWatered` (null / today / yesterday / 2-13 / 14+ / 3d12h regression) and `resolveSpeciesHeadline` (label / slug fallback / species_unknown / whitespace label).
+
+### Reading order — three stops, not one collapsed stop
+The brief called out VoiceOver double-read prevention. The first draft used `accessible={true}` on the wrapping View with `importantForAccessibility='no-hide-descendants'` on every inner Text — that collapses species + nickname + last-watered into a single VO stop. Two problems surfaced under test: (1) RTL's `getByText` / `getByTestId` cannot find descendants of an `accessible` parent, breaking deterministic test queries; (2) iOS rotor "by-header" navigation skips the species line because the header role is buried inside a non-element. Final shape: each Text is its own stop in document order. The wrapping View still carries the composed `accessibilityLabel` ("Monstera deliciosa, Mona, Last watered 3 days ago") as a one-line summary for assertion, but it is NOT marked `accessible` so RN doesn't collapse the children. The nickname Text overrides its own `accessibilityLabel` to drop the curly-quote glyphs from speech (VoiceOver would otherwise pronounce "left double quotation mark Mona right double quotation mark"). The Wave-1 double-read lesson still applies inside StatusChip and PhotoTimeline tiles, where the same string would otherwise be read twice — but here, three different strings in three different roles deserve three different stops.
+
+### Sub-day-precision DST/IDL math
+`formatLastWatered(lastWateredAtMs, nowMs)` walks calendar days in the device's local time zone via `localDayDelta` — extracts Y/M/D from each side via `new Date(...).getFullYear/Month/Date`, anchors both to local-midnight, and walks forward one calendar day at a time until the cursor catches up to "now". The same algorithm `PhotoTimeline.formatRelativeDate` uses; the same algorithm `WateringLedger`'s 7-day grid uses. Survives DST forward (23-hour day), DST backward (25-hour day), and IDL flights because the day-walk doesn't depend on ms-per-day. The 3d12h fixture in the tests pins the contract: `nowMs - 3*DAY_MS - 12h` labels "Last watered 3 days ago", not "Last watered 4 days ago" (which `Math.ceil((now - then) / DAY_MS)` would produce on the 3.5-day boundary) and not "Last watered 3 days 12 hours ago" (no sub-day precision in the editorial copy). No date-fns / luxon / dayjs / Temporal — V1 scope lock.
+
+### Add note button — E4-007 hidden default + E8-004 unhide path
+`noteEnabled` defaults to `false`. When false, the button is fully omitted from the rendered tree (NOT just `opacity: 0` — that would still expose to screen readers, defeating the E4-007 "do not render dead UI" contract). E8-004 will flip `noteEnabled={true}` at the parent and pass `onAddNote` alongside; the screen un-hides without further plumbing. Decoupling lesson from codex review: the first draft gated rendering on `noteEnabled && onAddNote`, which made `noteEnabled` alone insufficient to un-hide. Final shape: render on `noteEnabled` alone; if `onAddNote` is missing in dev, `console.warn`; if missing in prod, the press is a graceful no-op so a misconfigured parent doesn't crash the screen.
+
+### AppState resume vs prop-refresh
+The brief offered two patterns: (a) AppState listener inside the screen that re-queries SQLite, or (b) accept a `refresh` prop. Picked (b) but in its strictest form — no callback at all. The parent (PlantsListScreen → routing layer → E4-006 mark-watered mutation) already owns the refetch trigger; passing an unused `onRefresh` callback into this screen would be cargo-cult. The screen re-renders when the parent passes new `plant` / `wateringEvents` / `photos` props. `useWateringEngine` re-reads on `plant.id` change. AppState listener: explicitly NOT here — PlantsListScreen (E3-003) is responsible for app-wide resume policy.
+
+### Reduce-motion seam
+The screen has zero animations in V1 (per master plan A-2 spec — hero photo loads with cream skeleton, no shimmer; ledger and timeline are static). `useReduceMotion()` is still consumed so a future ticket adding any transition (e.g. mark-watered confetti, hero-photo cross-fade) can gate on the value without a refactor. Documented at the file header so the next ticket doesn't strip it.
+
+### Adversarial review (codex)
+Two P2s caught + addressed before ship; zero P1s.
+- **P2** — `onRefresh` was declared as a documented seam but never read or called. Codex: "implies the screen does refetch work it doesn't actually do." Fix: dropped the prop entirely; the parent owns the refetch channel via re-rendering with new prop values. File-header rationale rewritten to match.
+- **P2** — `noteEnabled && onAddNote` coupling meant flipping the flag alone wasn't enough to un-hide. Codex: "if E8-004 is meant to be a one-flag unhide, this coupling is a trap." Fix: render on `noteEnabled` alone; missing callback warns in dev and falls back to `() => undefined` in prod. New test pins the contract.
+- **Verified, no action** — codex confirmed: a11y/header choice avoids the collapsed-rotor bug; the last-watered math is calendar-day based not ms-floor based; the hidden Add note button is fully omitted not just visually hidden.
+
+### V1 scope locks (rejected)
+- No SQLite mutation here. "Mark watered" calls `onMarkWatered()`; E4-006 owns the watering_events INSERT. "Edit details" calls `onEditDetails()`; E6-006 owns the bottom sheet. "Add note" calls `onAddNote()`; E8-005 owns the notes table write.
+- No date-fns / luxon / dayjs / Temporal. The `localDayDelta` walk is inlined here (mirrors `PhotoTimeline`); a shared `src/lib/relativeDate.ts` lift waits until a third consumer needs it.
+- No new dep / library. ScrollView is the RN built-in; no FlashList / SectionList yet.
+- No backend changes. Parent fetches; this screen renders.
+
+### Files
+- `apps/mobile/src/screens/PlantDetailScreen.tsx`
+- `apps/mobile/src/screens/__tests__/PlantDetailScreen.test.tsx`
+
+### Testing
+- `bun --cwd apps/mobile test`: 25 suites, 383 tests passing (30 new on this screen).
+- `bun --cwd apps/backend test`: 8 suites, 148 tests passing (no changes; sanity).
+
+>>>>>>> origin/Anandsatch/e4-plant-detail
 ## [0.1.26.0] - 2026-05-04
 
 E5-004 — `<CameraView>` wraps `expo-camera` with permission-gated rendering (composes `CameraPermissionPrePrompt` from E5-003), a top mode-toggle pill (identify / diagnose), and a bottom shutter button. The mode prop discriminates downstream behavior in E5-008 (`CameraResultScreen`) and E5-010 (`AddPlantScreen`). Stacks on `Anandsatch/e5-camera-pre-prompt` (PR #18); auto-rebases to main when E5-003 lands. The wrapper is exported as `PlantCareCameraView` from `apps/mobile/src/components/CameraView.tsx` because `expo-camera` already exports a class component named `CameraView` from its modern API — the file name keeps symmetry with the master-plan spec, the export name avoids the import collision.
