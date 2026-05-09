@@ -159,6 +159,13 @@ import type {
   ReviewResponse,
 } from '../api';
 import {
+  isLlmCallEndpoint,
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallEndpoint,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
+import {
   claimInFlight,
   markDone,
   markFailedTerminal,
@@ -224,17 +231,38 @@ function isKnownEndpoint(value: string): value is QueueKind {
   return KNOWN_ENDPOINTS.has(value as QueueKind);
 }
 
-/** Outcome categories the drainer derives from `ApiResult`. */
+/**
+ * Outcome categories the drainer derives from `ApiResult`. Each carries
+ * a `billable` flag — true when the upstream LLM call actually fired
+ * and consumed quota, regardless of whether the API surfaced a success
+ * or a structured error. The flag drives the E11-006 insertion path
+ * (`recordLlmCall`); see `lib/llmBudget.ts` for the policy table.
+ *
+ * Locked taxonomy:
+ *   - `success`              — billable=true (ok=true)
+ *   - `rate_limited`         — billable=true (server returned 429; provider
+ *                              processed enough to rate-limit us)
+ *   - `retryable` (server)   — billable=true (5xx — provider billed)
+ *   - `retryable` (net/timo) — billable=false (fetch threw before reaching
+ *                              provider OR never reached provider)
+ *   - `terminal` (parse/L1/  — billable=true (provider billed; we just
+ *      low_conf)               couldn't use the response or it was off-topic)
+ *   - `terminal` (unknown    — billable=false (we never even built the
+ *      endpoint / payload)     request — schema-level reject)
+ *   - `paradox`              — billable=false (kind='queued' from API; we
+ *                              never want to count a "the backend says
+ *                              you're queued" response as a billable hit)
+ */
 type DispatchOutcome =
-  | { kind: 'success' }
+  | { kind: 'success'; billable: true }
   /** Server returned 429 with a retry-after; reschedule without burning an attempt. */
-  | { kind: 'rate_limited'; retryAfterMs: number }
+  | { kind: 'rate_limited'; retryAfterMs: number; billable: true }
   /** Retryable: network / timeout / server (non-429). Burns a schedule slot. */
-  | { kind: 'retryable'; errorMessage?: string }
+  | { kind: 'retryable'; errorMessage?: string; billable: boolean }
   /** Non-retryable: parse_error / layer1_reject / unknown endpoint. Terminal. */
-  | { kind: 'terminal'; errorMessage?: string }
+  | { kind: 'terminal'; errorMessage?: string; billable: boolean }
   /** Paradoxical: `kind: 'queued'` from the API itself — shouldn't happen mid-drain. */
-  | { kind: 'paradox'; errorMessage: string };
+  | { kind: 'paradox'; errorMessage: string; billable: false };
 
 /** Result of a single drain pass; useful for tests + observability hooks. */
 export interface DrainSummary {
@@ -260,6 +288,23 @@ export interface SyncDrainerConfig {
   apiClient: ApiClient;
   /** Override clock for tests; defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * E11-006 insertion path. When provided, the drainer calls
+   * `recordLlmCall(budgetDb, endpoint, { nowMs: now() })` AFTER any
+   * dispatched row whose `DispatchOutcome.billable === true` (success,
+   * rate-limited, server 5xx, parse_error, layer1_reject, low_confidence
+   * — everything that billed the upstream provider). DO NOT record on
+   * network/timeout/queued/paradox/unknown-endpoint — those did not
+   * bill quota. The drainer uses its OWN `nowMs` so a queued call
+   * drained later counts toward the day it actually FIRES (not the
+   * day it was queued) per the master-plan UTC-day budget rule.
+   *
+   * Optional: when omitted (legacy compositions, isolated drainer
+   * tests), the drainer is a no-op on the budget side. Production
+   * wiring (E7-003) supplies the same `openDb()` handle the rest of
+   * the app shares; better-sqlite3 in tests injects a small writer.
+   */
+  budgetDb?: LlmCallWriter;
   /** Override drain batch limit; defaults to DRAIN_BATCH_LIMIT. */
   batchLimit?: number;
   /**
@@ -383,11 +428,24 @@ export function createSyncDrainer(config: SyncDrainerConfig): SyncDrainer {
       // a thrown error here is a programming-error path (e.g. malformed
       // payload_json that JSON.parse rejects, or a payload that fails
       // schema reconstruction). These are non-retryable — the row's
-      // shape is the problem, retrying won't fix it.
+      // shape is the problem, retrying won't fix it. Not billable —
+      // the request never made it to the provider.
       outcome = {
         kind: 'terminal',
         errorMessage: err instanceof Error ? err.message : String(err),
+        billable: false,
       };
+    }
+
+    // E11-006 insertion path. Record BEFORE the row's terminal-state
+    // mutator so a budget-write failure (logged in `recordLlmCall`)
+    // never blocks the row from advancing. Best-effort: errors are
+    // swallowed inside the helper. The drainer-side `nowMs` is the
+    // drain-time clock — a row queued yesterday and drained today
+    // counts as a today call (master-plan UTC-day budget rule).
+    if (outcome.billable && config.budgetDb && isLlmCallEndpoint(row.endpoint)) {
+      const endpoint: LlmCallEndpoint = row.endpoint;
+      void recordLlmCall(config.budgetDb, endpoint, { nowMs: now() });
     }
 
     switch (outcome.kind) {
