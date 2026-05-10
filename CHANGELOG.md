@@ -81,6 +81,32 @@ The CHANGELOG corruption was upstream bit-rot, not introduced by any single tick
 - The cleanup script is preserved at `.context/changelog_cleanup.py` for archaeology / future use; it's gitignored under `.context/` so it doesn't ship.
 - Future Wave 3-RESUME PRs (E11-006 finisher, E5-011 finisher, then Wave A/B/C dispatches) prepend their entry on top of the now-clean v0.1.56.0 entry per normal cadence.
 
+## [0.1.56.0] - 2026-05-09
+
+Chore — `CHANGELOG.md` cleanup. Successive Wave 2 + Wave 3 PR merges (~25 PRs merged via squash-merge between v0.1.27.0 and v0.1.55.0) had been resolving CHANGELOG.md merge conflicts inconsistently — many merges kept both sides' content but committed the conflict markers in place. The result was 50+ unresolved `<<<<<<< HEAD`, `=======`, `>>>>>>> origin/Anandsatch/<branch>` lines committed into `main` and a version-entry order that wasn't strictly descending (v0.1.51.0 sat above v0.1.55.0; v0.1.50.0 was wedged between v0.1.36.0 and v0.1.35.0; v0.1.45.0 sat between v0.1.27.0 and v0.1.33.0). The most pernicious case was at the top of the file where the merge of PR #58 (v0.1.55.0) injected the entire v0.1.55.0 entry INTO the body of the v0.1.51.0 entry, splitting v0.1.51.0's "### Adversarial review (codex)" tail off and stranding it after v0.1.55.0's body. No production source touched in this PR — every code-bearing v0.1.X entry from v0.1.0.0 through v0.1.55.0 is reassembled exactly as it was authored, just with markers removed and the chronological order restored.
+
+### Changed
+- `CHANGELOG.md` — stripped 50+ unresolved merge-conflict marker lines; reassembled the v0.1.51.0 entry by moving its "### Adversarial review (codex) / V1 scope locks (rejected) / Notes" tail (the 23-line block starting "Two passes. First pass surfaced one P1...") back from inside v0.1.55.0's body into v0.1.51.0's body, before the v0.1.55.0 header; sorted all 56 version entries strictly descending by version tuple; normalized blank lines around `##` and `###` headings. File length: 1724 → 1681 lines (43-line reduction is purely deleted marker lines + collapsed double-blank-lines around headings). Every `## [X.Y.Z.W]` header text and every body line below it is byte-identical to what it was on its original PR's commit; the change is structural, not editorial.
+
+### Why a standalone PR
+The CHANGELOG corruption was upstream bit-rot, not introduced by any single ticket. Every Wave 3-RESUME finisher's "rebase + append CHANGELOG" step would have inherited the markers and re-merged across them, perpetuating the rot. Landing the cleanup as its own VERSION slot (v0.1.56.0) means every downstream finisher (E11-006 → v0.1.57.0, E5-011 → v0.1.58.0, Wave A/B/C tickets after that) rebases onto a clean base and only adds its own entry on top.
+
+### Adversarial review
+- Marker count after the strip pass: 0 (down from ~50). Locked by a sanity check in the cleanup script.
+- Version-header count: 56 (matches the pre-cleanup unique count — no entry lost or duplicated).
+- Strict descending order by version tuple: verified.
+- The v0.1.51.0 reassembly is verified by reading the entry end-to-end and confirming the opener → "### Added" → moved "### Adversarial review (codex)" → "### V1 scope locks (rejected)" → "### Notes" sequence reads as one coherent entry.
+- No production source files touched. `bun --cwd apps/mobile typecheck` and the test suites are unaffected by definition (CHANGELOG isn't imported anywhere).
+
+### V1 scope locks (rejected reviewer suggestions)
+- **Re-edit the historical entry text** — rejected. The cleanup is structural only: every body line below every `## [X.Y.Z.W]` header is preserved verbatim. Editing historical entries would erase the codex catches and decision rationale Anand has been reading back as memory.
+- **Move the cleanup into an existing ticket's PR** — rejected per the brief; the slot is its own PR so downstream finishers rebase onto a clean base.
+- **Auto-rebuild from `git log`** — rejected. The CHANGELOG voice is denser and more decision-rich than commit messages; reconstructing from `git log --pretty=full` would lose the per-PR adversarial review summaries and the V1 scope-lock rejections that the entries carry.
+
+### Notes
+- The cleanup script is preserved at `.context/changelog_cleanup.py` for archaeology / future use; it's gitignored under `.context/` so it doesn't ship.
+- Future Wave 3-RESUME PRs (E11-006 finisher, E5-011 finisher, then Wave A/B/C dispatches) prepend their entry on top of the now-clean v0.1.56.0 entry per normal cadence.
+
 ## [0.1.55.0] - 2026-05-09
 
 E9-005 — Test coverage for the Weekly Review surfaces (`<SundayLetterCard>` from E9-003 and `<WeeklyReviewScreen>` from E9-004). Stacks on `main` (origin/main = v0.1.50.0). The discipline this adds: surface-level coverage gaps closed (Strict-mode latch on the card, dispatch-fingerprint key separation on the screen, Hermes-without-Intl tripwire on both) plus a cross-component integration suite at `apps/mobile/src/__tests__/weeklyReviewFlow.integration.test.tsx` that exercises real component composition end-to-end with real `better-sqlite3` for the dismiss round-trip — only the api-client and accessibility hooks are mocked at the boundary. Two codex P1 catches addressed before ship.
