@@ -168,6 +168,16 @@ export type AddPlantScreenProps = {
    * never set this.
    */
   readonly skipCompress?: boolean;
+  /**
+   * E11-006 insertion path. Forwarded to `useIdentifyRequest` so a
+   * terminal-success identify call advances the SQLite budget meter
+   * `useLlmBudget()` reads. Optional — when omitted, the hook is a
+   * no-op on the budget side. Production wires this from the route
+   * layer with a `() => openDb()` factory; tests can pass a stub
+   * writer or omit entirely.
+   */
+  readonly budgetDb?: import('../lib/llmBudget').LlmCallWriter
+    | (() => Promise<import('../lib/llmBudget').LlmCallWriter>);
   readonly testID?: string;
 };
 
@@ -228,12 +238,14 @@ export function AddPlantScreen({
   onSave,
   onCancel,
   skipCompress,
+  budgetDb,
   testID,
 }: AddPlantScreenProps): ReactElement {
   const theme = useTheme();
   const { identify, status: identifyStatus } = useIdentifyRequest({
     apiClient,
     netInfo,
+    ...(budgetDb ? { budgetDb } : {}),
   });
 
   const [phase, setPhase] = useState<Phase>(skipCompress ? 'identifying' : 'compressing');
