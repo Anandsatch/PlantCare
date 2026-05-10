@@ -73,6 +73,7 @@ import {
 import { EmptyGardenWelcome } from '../components/EmptyGardenWelcome';
 import { PlantCard } from '../components/PlantCard';
 import { FAB } from '../components/primitives/FAB';
+import { FABPopover } from '../components/primitives/FABPopover';
 import { openDb } from '../db';
 import type { Plant } from '../db/types';
 import { useTheme } from '../hooks/useTheme';
@@ -157,8 +158,22 @@ export interface PlantViewModel {
 export interface PlantsListScreenProps {
   /** Tap "+": launch camera capture in identify mode (master plan A-1 → A-5). */
   onAddPlant: () => void;
-  /** Long-press "+": open the E3-004 popover. Wiring lands in E3-004. */
+  /**
+   * Long-press "+": legacy single-callback hook. When neither
+   * `onQuickDiagnose` nor `onAddPlantFromPopover` is provided, the screen
+   * falls back to invoking this directly (E3-003 behavior). When the new
+   * popover callbacks are provided, the screen opens the E3-004 popover
+   * INSTEAD and `onLongPressFAB` becomes an opt-in additional notify
+   * (e.g. analytics) — it fires alongside the popover open.
+   */
   onLongPressFAB?: () => void;
+  /**
+   * Tap "Quick diagnose" in the FAB popover (E3-004). Master plan A-1
+   * § FAB behavior: launches A-5 in diagnose mode, NO save to garden.
+   * When omitted, the popover doesn't open on long-press (legacy E3-003
+   * single-callback behavior preserved).
+   */
+  onQuickDiagnose?: () => void;
   /** Tap a row: navigate to plant detail (A-2). */
   onPlantPress: (plant: Plant) => void;
   /**
@@ -179,6 +194,7 @@ const HEADER_TITLE = 'PlantCare';
 export function PlantsListScreen({
   onAddPlant,
   onLongPressFAB,
+  onQuickDiagnose,
   onPlantPress,
   nowMs,
   db,
@@ -186,6 +202,39 @@ export function PlantsListScreen({
 }: PlantsListScreenProps) {
   const theme = useTheme();
   const plantsApi = usePlants();
+
+  // Popover open state (E3-004). Open on FAB long-press when at least the
+  // Quick-diagnose callback is wired; otherwise fall back to firing the
+  // legacy `onLongPressFAB` directly (E3-003 behavior).
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const popoverEnabled = typeof onQuickDiagnose === 'function';
+  // Ref to the FAB anchor wrapper — handed to FABPopover as the
+  // focus-return target so screen-reader users land back on the FAB after
+  // dismiss. View is the appropriate ref shape for findNodeHandle.
+  const fabAnchorRef = useRef<View>(null);
+
+  const handleLongPress = useCallback(() => {
+    if (popoverEnabled) {
+      setPopoverOpen(true);
+      // Also notify the legacy hook (analytics / parent observer). The
+      // popover is the primary surface, so this fires alongside.
+      onLongPressFAB?.();
+    } else {
+      onLongPressFAB?.();
+    }
+  }, [popoverEnabled, onLongPressFAB]);
+
+  const handlePopoverDismiss = useCallback(() => {
+    setPopoverOpen(false);
+  }, []);
+
+  const handlePopoverAddPlant = useCallback(() => {
+    onAddPlant();
+  }, [onAddPlant]);
+
+  const handlePopoverQuickDiagnose = useCallback(() => {
+    onQuickDiagnose?.();
+  }, [onQuickDiagnose]);
 
   /**
    * Generation counter for in-flight loads. Each invocation of `load`
@@ -436,13 +485,30 @@ export function PlantsListScreen({
           />
         )}
       />
-      <View style={styles.fabAnchor} pointerEvents="box-none">
+      {/* The FAB anchor wraps the FAB in a View we can hand to FABPopover
+          as the focus-return target. FAB itself doesn't forwardRef in V1
+          (E2-009 didn't introduce one); the wrapper covers the same hit
+          area for VoiceOver focus return without changing the FAB API. */}
+      <View ref={fabAnchorRef} style={styles.fabAnchor} pointerEvents="box-none">
         <FAB
           onPress={onAddPlant}
-          onLongPress={onLongPressFAB}
+          // Long-press routes through `handleLongPress` so the screen can
+          // own the popover-open vs legacy-callback decision in one place.
+          // FAB sees a single onLongPress callback regardless.
+          onLongPress={popoverEnabled || onLongPressFAB ? handleLongPress : undefined}
           testID={testID ? `${testID}-fab` : 'plants-list-fab'}
         />
       </View>
+      {popoverEnabled && (
+        <FABPopover
+          open={popoverOpen}
+          onDismiss={handlePopoverDismiss}
+          onAddPlant={handlePopoverAddPlant}
+          onQuickDiagnose={handlePopoverQuickDiagnose}
+          triggerRef={fabAnchorRef}
+          testID={testID ? `${testID}-fab-popover` : 'plants-list-fab-popover'}
+        />
+      )}
       {/* refresh isn't rendered, but exposed via test seam below */}
       <RefreshHandle refresh={refresh} />
     </View>

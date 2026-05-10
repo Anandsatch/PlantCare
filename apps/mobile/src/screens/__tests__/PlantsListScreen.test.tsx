@@ -401,6 +401,171 @@ describe('PlantsListScreen — FAB interactions', () => {
 });
 
 // =========================================================================
+// FAB popover (E3-004) — long-press surfaces the popover when wired
+// =========================================================================
+
+describe('PlantsListScreen — FAB popover (E3-004)', () => {
+  it('popover stays closed until FAB is long-pressed', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    expect(screen.queryByTestId('plants-list-fab-popover-menu')).toBeNull();
+  });
+
+  it('FAB long-press opens the popover with both items', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    expect(screen.getByTestId('plants-list-fab-popover-menu')).toBeTruthy();
+    expect(screen.getByTestId('plants-list-fab-popover-item-add')).toBeTruthy();
+    expect(screen.getByTestId('plants-list-fab-popover-item-diagnose')).toBeTruthy();
+  });
+
+  it('popover "Add a plant" → onAddPlant fires; popover dismisses', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onAddPlant = jest.fn();
+    const onQuickDiagnose = jest.fn();
+    render(
+      <PlantsListScreen
+        onAddPlant={onAddPlant}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={onQuickDiagnose}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    fireEvent.press(screen.getByTestId('plants-list-fab-popover-item-add'));
+    expect(onAddPlant).toHaveBeenCalledTimes(1);
+    expect(onQuickDiagnose).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-fab-popover-menu')).toBeNull(),
+    );
+  });
+
+  it('popover "Quick diagnose" → onQuickDiagnose fires; popover dismisses', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onAddPlant = jest.fn();
+    const onQuickDiagnose = jest.fn();
+    render(
+      <PlantsListScreen
+        onAddPlant={onAddPlant}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={onQuickDiagnose}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    fireEvent.press(screen.getByTestId('plants-list-fab-popover-item-diagnose'));
+    expect(onQuickDiagnose).toHaveBeenCalledTimes(1);
+    expect(onAddPlant).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-fab-popover-menu')).toBeNull(),
+    );
+  });
+
+  it('tap-outside dismisses the popover without firing either handler', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onAddPlant = jest.fn();
+    const onQuickDiagnose = jest.fn();
+    render(
+      <PlantsListScreen
+        onAddPlant={onAddPlant}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={onQuickDiagnose}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    fireEvent.press(screen.getByTestId('plants-list-fab-popover-backdrop'));
+    expect(onAddPlant).not.toHaveBeenCalled();
+    expect(onQuickDiagnose).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-fab-popover-menu')).toBeNull(),
+    );
+  });
+
+  it('legacy onLongPressFAB still fires when no onQuickDiagnose is provided (E3-003 backwards-compat)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onLongPressFAB = jest.fn();
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        onLongPressFAB={onLongPressFAB}
+        // intentionally no onQuickDiagnose — should NOT mount the popover.
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    expect(onLongPressFAB).toHaveBeenCalledTimes(1);
+    // No popover mounted because onQuickDiagnose is absent.
+    expect(screen.queryByTestId('plants-list-fab-popover-menu')).toBeNull();
+  });
+
+  it('long-press also notifies onLongPressFAB when popover is wired (analytics passthrough)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onLongPressFAB = jest.fn();
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        onLongPressFAB={onLongPressFAB}
+        onQuickDiagnose={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    expect(onLongPressFAB).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('plants-list-fab-popover-menu')).toBeTruthy();
+  });
+
+  it('FAB has no onLongPress handler when neither popover nor legacy callback is wired', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    const fab = screen.getByTestId('plants-list-fab');
+    // Without a long-press handler, the hint that announces "Long-press for
+    // quick diagnose" should also be absent — otherwise screen readers would
+    // promise an affordance with no handler.
+    expect(fab.props.accessibilityHint).toBeUndefined();
+  });
+});
+
+// =========================================================================
 // Row interactions
 // =========================================================================
 
