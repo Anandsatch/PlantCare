@@ -22,6 +22,49 @@
 export const LLM_DAILY_LIMIT = 50;
 
 /**
+ * Soft warning threshold. When `used >= LLM_BUDGET_LOW_THRESHOLD` the
+ * Plants list mounts a tan `<ToastBanner type='warn'>` ("Approaching daily
+ * limit — N/50 used today"). Below the threshold the banner is unmounted
+ * (returns null). The banner is informational only — CTAs remain enabled
+ * up through `used = 49`.
+ *
+ * 40 mirrors the master plan's "approaching daily limit" point — at 80% of
+ * `LLM_DAILY_LIMIT` we still want the user to be able to fire 10 more
+ * calls before the hard gate (`LLM_BUDGET_HARD_THRESHOLD`) clamps shut.
+ *
+ * E11-006 lock: this value is exported here (not buried in the banner
+ * file) so the banner copy + the test harness + any future analytics
+ * emitter all read from one source of truth. No date math, no calendar
+ * walking — same UTC-ms regime as the rest of the budget surface.
+ */
+export const LLM_BUDGET_LOW_THRESHOLD = 40;
+
+/**
+ * Hard disable threshold. When `used >= LLM_BUDGET_HARD_THRESHOLD` every
+ * LLM-firing CTA in the app passes through `useLlmBudgetGate()` and
+ * receives `disabled = true`. Specifically:
+ *
+ *   - the bottom-right FAB (camera in identify mode)
+ *   - the popover "Quick diagnose" item
+ *   - AddNoteSheet's "Save & analyze" CTA
+ *
+ * The banner stays mounted at `>= 50` (it was already mounted at `>= 40`).
+ * Tapping a disabled CTA shows the same banner — there is no second
+ * "limit reached" surface in V1.
+ *
+ * The threshold is exactly `LLM_DAILY_LIMIT` because the OpenRouter free-
+ * tier quota is 50/day. Allowing the 51st call would burn a paid-router
+ * escalation (the master plan's "free → escalate router") without the
+ * user understanding that a soft cap had been crossed. Hard-stop at 50.
+ *
+ * Note: the gate uses `>=`, not `===`. A 51st row landing in the table
+ * (e.g. via a follow-up SyncDrainer terminal-success while the gate is
+ * in the loading state and a stale read advanced past 50) MUST also be
+ * disabled — `===` would silently re-enable CTAs at exactly 51.
+ */
+export const LLM_BUDGET_HARD_THRESHOLD = LLM_DAILY_LIMIT;
+
+/**
  * One UTC day in milliseconds. Exported so the hook + any future caller
  * shares a single literal — a typo on either side would silently desync
  * the rollover.

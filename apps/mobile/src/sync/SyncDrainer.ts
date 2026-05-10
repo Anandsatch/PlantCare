@@ -159,6 +159,13 @@ import type {
   ReviewResponse,
 } from '../api';
 import {
+  isLlmCallEndpoint,
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallEndpoint,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
+import {
   claimInFlight,
   markDone,
   markFailedTerminal,
@@ -224,17 +231,37 @@ function isKnownEndpoint(value: string): value is QueueKind {
   return KNOWN_ENDPOINTS.has(value as QueueKind);
 }
 
-/** Outcome categories the drainer derives from `ApiResult`. */
+/**
+ * Outcome categories the drainer derives from `ApiResult`. Each carries
+ * a `billable` flag — true ONLY for terminal-success (E11-006 P1 from
+ * codex review). Locked policy mirror of
+ * `shouldRecordLlmCallResult` in `lib/llmBudget.ts`:
+ *
+ *   - `success`              → billable=true (the user got a result)
+ *   - everything else        → billable=false
+ *
+ * Why narrower than "the provider billed":
+ *
+ *   - `rate_limited` / `retryable` are by definition NOT terminal —
+ *     the drainer reschedules and re-fires. Counting them per attempt
+ *     would burn multiple budget slots for one user-perceived attempt.
+ *   - `terminal` non-success (parse_error / layer1_reject / unknown
+ *     endpoint / payload-decode failure) leaves the user without a
+ *     usable result. The budget is the in-app gate for visible
+ *     answers, not a provider-billing audit.
+ *   - `paradox` (backend says queued mid-drain) is not a billable hit
+ *     by definition.
+ */
 type DispatchOutcome =
-  | { kind: 'success' }
+  | { kind: 'success'; billable: true }
   /** Server returned 429 with a retry-after; reschedule without burning an attempt. */
-  | { kind: 'rate_limited'; retryAfterMs: number }
+  | { kind: 'rate_limited'; retryAfterMs: number; billable: false }
   /** Retryable: network / timeout / server (non-429). Burns a schedule slot. */
-  | { kind: 'retryable'; errorMessage?: string }
+  | { kind: 'retryable'; errorMessage?: string; billable: false }
   /** Non-retryable: parse_error / layer1_reject / unknown endpoint. Terminal. */
-  | { kind: 'terminal'; errorMessage?: string }
+  | { kind: 'terminal'; errorMessage?: string; billable: false }
   /** Paradoxical: `kind: 'queued'` from the API itself — shouldn't happen mid-drain. */
-  | { kind: 'paradox'; errorMessage: string };
+  | { kind: 'paradox'; errorMessage: string; billable: false };
 
 /** Result of a single drain pass; useful for tests + observability hooks. */
 export interface DrainSummary {
@@ -260,6 +287,25 @@ export interface SyncDrainerConfig {
   apiClient: ApiClient;
   /** Override clock for tests; defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * E11-006 insertion path. When provided, the drainer calls
+   * `recordLlmCall(budgetDb, endpoint, { nowMs: now() })` AFTER any
+   * dispatched row whose `DispatchOutcome.billable === true`. Per the
+   * codex P1 follow-up, the only billable outcome is `kind: 'success'`
+   * — `rate_limited` / `retryable` / `terminal` / `paradox` are all
+   * `billable: false` because either (a) the row will re-fire on the
+   * schedule (counting now would over-count once the eventual success
+   * also records) or (b) the user got no usable result. The drainer
+   * uses its OWN `nowMs` so a queued call drained later counts toward
+   * the day it actually FIRES (not the day it was queued) per the
+   * master-plan UTC-day budget rule.
+   *
+   * Optional: when omitted (legacy compositions, isolated drainer
+   * tests), the drainer is a no-op on the budget side. Production
+   * wiring (E7-003) supplies the same `openDb()` handle the rest of
+   * the app shares; better-sqlite3 in tests injects a small writer.
+   */
+  budgetDb?: LlmCallWriter;
   /** Override drain batch limit; defaults to DRAIN_BATCH_LIMIT. */
   batchLimit?: number;
   /**
@@ -383,11 +429,24 @@ export function createSyncDrainer(config: SyncDrainerConfig): SyncDrainer {
       // a thrown error here is a programming-error path (e.g. malformed
       // payload_json that JSON.parse rejects, or a payload that fails
       // schema reconstruction). These are non-retryable — the row's
-      // shape is the problem, retrying won't fix it.
+      // shape is the problem, retrying won't fix it. Not billable —
+      // the request never made it to the provider.
       outcome = {
         kind: 'terminal',
         errorMessage: err instanceof Error ? err.message : String(err),
+        billable: false,
       };
+    }
+
+    // E11-006 insertion path. Record BEFORE the row's terminal-state
+    // mutator so a budget-write failure (logged in `recordLlmCall`)
+    // never blocks the row from advancing. Best-effort: errors are
+    // swallowed inside the helper. The drainer-side `nowMs` is the
+    // drain-time clock — a row queued yesterday and drained today
+    // counts as a today call (master-plan UTC-day budget rule).
+    if (outcome.billable && config.budgetDb && isLlmCallEndpoint(row.endpoint)) {
+      const endpoint: LlmCallEndpoint = row.endpoint;
+      void recordLlmCall(config.budgetDb, endpoint, { nowMs: now() });
     }
 
     switch (outcome.kind) {
@@ -576,9 +635,12 @@ async function dispatchRow(
   api: ApiClient,
 ): Promise<DispatchOutcome> {
   if (!isKnownEndpoint(row.endpoint)) {
+    // Unknown endpoint = schema-level reject; the request never built,
+    // never billed. Not billable.
     return {
       kind: 'terminal',
       errorMessage: `unknown endpoint '${row.endpoint}'`,
+      billable: false,
     };
   }
 
@@ -586,11 +648,13 @@ async function dispatchRow(
   try {
     payload = JSON.parse(row.payload_json);
   } catch (err) {
+    // Payload corruption — never reached the provider, never billed.
     return {
       kind: 'terminal',
       errorMessage: `payload JSON parse failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      billable: false,
     };
   }
 
@@ -626,32 +690,44 @@ async function dispatchRow(
  */
 function classify(result: ApiResult<unknown>): DispatchOutcome {
   if (result.ok) {
-    return { kind: 'success' };
+    // Terminal-success — the only billable outcome per E11-006 P1.
+    return { kind: 'success', billable: true };
   }
   switch (result.kind) {
     case 'server': {
       // Retry-after is the 429 signal in the client classification.
-      // 5xx (no retry-after) takes the retryable path.
-      if (typeof result.retry_after === 'number') {
+      // 5xx (no retry-after) takes the retryable path. Neither is
+      // billable — both will re-fire on the schedule and the eventual
+      // success records once. `Number.isFinite` (not `typeof ===
+      // 'number'`) because NaN passes typeof and would propagate as
+      // `retryAfterMs: NaN` (codex E11-006 P2).
+      if (Number.isFinite(result.retry_after)) {
         return {
           kind: 'rate_limited',
-          retryAfterMs: Math.max(0, result.retry_after) * 1_000,
+          retryAfterMs: Math.max(0, result.retry_after as number) * 1_000,
+          billable: false,
         };
       }
-      return { kind: 'retryable', errorMessage: result.message };
+      return { kind: 'retryable', errorMessage: result.message, billable: false };
     }
     case 'network':
     case 'timeout':
-      return { kind: 'retryable', errorMessage: result.message };
+      // Fetch never returned a usable result. Not billable.
+      return { kind: 'retryable', errorMessage: result.message, billable: false };
     case 'parse_error':
     case 'layer1_reject':
     case 'low_confidence':
-      return { kind: 'terminal', errorMessage: result.message };
+      // Terminal-non-success — the user got no usable result.
+      // Not billable; budget tracks user-perceived successes only.
+      return { kind: 'terminal', errorMessage: result.message, billable: false };
     case 'queued':
+      // Backend bouncing a drainer-issued request as queued is paradox
+      // (V1 backend serves synchronously). Not billable.
       return {
         kind: 'paradox',
         errorMessage:
           'API returned kind=queued; backend should not bounce drainer-issued requests in V1',
+        billable: false,
       };
   }
 }

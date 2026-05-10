@@ -278,6 +278,15 @@ export type CameraResultScreenProps = {
    * the AccessibilityInfo native module.
    */
   announceForAccessibilityImpl?: (announcement: string) => void;
+  /**
+   * E11-006 insertion path. Forwarded to `useDiagnoseRequest` so a
+   * terminal-success diagnose call advances the SQLite budget meter
+   * `useLlmBudget()` reads. Optional — when omitted, the hook is a
+   * no-op on the budget side. Production wires this from the route
+   * layer with a `() => openDb()` factory.
+   */
+  budgetDb?: import('../lib/llmBudget').LlmCallWriter
+    | (() => Promise<import('../lib/llmBudget').LlmCallWriter>);
   testID?: string;
 };
 
@@ -427,12 +436,16 @@ export function CameraResultScreen({
   onClose,
   compressPhotoImpl = defaultCompressPhoto,
   announceForAccessibilityImpl,
+  budgetDb,
   testID,
 }: CameraResultScreenProps): ReactElement {
   const theme = useTheme();
   const reduceMotion = useReduceMotion();
 
-  const { diagnose, status, lastResult } = useDiagnoseRequest({ apiClient });
+  const { diagnose, status, lastResult } = useDiagnoseRequest({
+    apiClient,
+    ...(budgetDb ? { budgetDb } : {}),
+  });
 
   // Compression phase. Fires once on mount; the result is held for the lifetime
   // of the screen so re-fire ("Try again", "Get a second opinion") re-uses the
