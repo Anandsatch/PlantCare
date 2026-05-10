@@ -297,13 +297,17 @@ export function useDiagnoseRequest(
         return coerced;
       }
 
-      // E11-006 insertion path. Fire-and-forget; budget writes never
-      // throw into the diagnose chain. Run BEFORE commitResult so the
-      // ordering is deterministic for tests, but don't await — the
-      // caller's promise resolves with `result` regardless of the
-      // budget write.
-      void recordIfBillable(result);
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits — i.e., this call wasn't superseded by a
+      // newer call AND the component is still mounted. Codex
+      // E11-006 follow-up P2: firing the budget write before the
+      // commit-time guard could over-count when a stale resolve
+      // races with reset()/unmount. Best-effort: still never
+      // throws into the diagnose chain.
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo],
@@ -319,9 +323,9 @@ export function useDiagnoseRequest(
   function commitResult(
     result: ApiResult<DiagnoseResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -331,6 +335,7 @@ export function useDiagnoseRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { diagnose, status, lastResult };

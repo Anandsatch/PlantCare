@@ -57,6 +57,8 @@
  *   - DO NOT add a "Tap for details" affordance — the copy is the detail.
  *   - DO NOT add a notification on threshold cross — banner-only UX.
  */
+import * as React from 'react';
+
 import {
   LLM_BUDGET_HARD_THRESHOLD,
   LLM_BUDGET_LOW_THRESHOLD,
@@ -90,7 +92,7 @@ export function resolveBudgetBannerCopy(
   return `Approaching daily limit — ${used}/${limit} used today.`;
 }
 
-export function BudgetBanner(props: BudgetBannerProps): JSX.Element | null {
+export function BudgetBanner(props: BudgetBannerProps): React.ReactElement | null {
   const { used, limit = LLM_DAILY_LIMIT, testID } = props;
 
   const message = resolveBudgetBannerCopy(used, limit);

@@ -70,6 +70,7 @@ import {
   View,
 } from 'react-native';
 
+import { BudgetBanner } from '../components/BudgetBanner';
 import { EmptyGardenWelcome } from '../components/EmptyGardenWelcome';
 import { PlantCard } from '../components/PlantCard';
 import { FAB } from '../components/primitives/FAB';
@@ -505,6 +506,24 @@ export function PlantsListScreen({
               >
                 {`${budget.used}/${budget.limit} TODAY`}
               </Text>
+            ) : null}
+            {/*
+              E11-006 — 40+/50+ LLM-budget banner. Renders only when
+              `used >= 40` (the component returns null otherwise, so this
+              site doesn't need its own gate). Placed under the
+              MY-GARDEN-/-budget-meter eyebrow per the A-1 master-plan
+              position — header, above the FAB anchor area. Persistent
+              (`autoDismissMs={0}` set inside BudgetBanner); unmounts
+              automatically on UTC-midnight rollover when
+              `useLlmBudget` re-queries via the AppState 'active'
+              listener.
+            */}
+            {budget.status === 'ready' ? (
+              <BudgetBanner
+                used={budget.used}
+                limit={budget.limit}
+                testID="plants-list-budget-banner"
+              />
             ) : null}
           </View>
         }

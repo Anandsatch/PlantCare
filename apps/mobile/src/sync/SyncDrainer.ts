@@ -233,34 +233,33 @@ function isKnownEndpoint(value: string): value is QueueKind {
 
 /**
  * Outcome categories the drainer derives from `ApiResult`. Each carries
- * a `billable` flag — true when the upstream LLM call actually fired
- * and consumed quota, regardless of whether the API surfaced a success
- * or a structured error. The flag drives the E11-006 insertion path
- * (`recordLlmCall`); see `lib/llmBudget.ts` for the policy table.
+ * a `billable` flag — true ONLY for terminal-success (E11-006 P1 from
+ * codex review). Locked policy mirror of
+ * `shouldRecordLlmCallResult` in `lib/llmBudget.ts`:
  *
- * Locked taxonomy:
- *   - `success`              — billable=true (ok=true)
- *   - `rate_limited`         — billable=true (server returned 429; provider
- *                              processed enough to rate-limit us)
- *   - `retryable` (server)   — billable=true (5xx — provider billed)
- *   - `retryable` (net/timo) — billable=false (fetch threw before reaching
- *                              provider OR never reached provider)
- *   - `terminal` (parse/L1/  — billable=true (provider billed; we just
- *      low_conf)               couldn't use the response or it was off-topic)
- *   - `terminal` (unknown    — billable=false (we never even built the
- *      endpoint / payload)     request — schema-level reject)
- *   - `paradox`              — billable=false (kind='queued' from API; we
- *                              never want to count a "the backend says
- *                              you're queued" response as a billable hit)
+ *   - `success`              → billable=true (the user got a result)
+ *   - everything else        → billable=false
+ *
+ * Why narrower than "the provider billed":
+ *
+ *   - `rate_limited` / `retryable` are by definition NOT terminal —
+ *     the drainer reschedules and re-fires. Counting them per attempt
+ *     would burn multiple budget slots for one user-perceived attempt.
+ *   - `terminal` non-success (parse_error / layer1_reject / unknown
+ *     endpoint / payload-decode failure) leaves the user without a
+ *     usable result. The budget is the in-app gate for visible
+ *     answers, not a provider-billing audit.
+ *   - `paradox` (backend says queued mid-drain) is not a billable hit
+ *     by definition.
  */
 type DispatchOutcome =
   | { kind: 'success'; billable: true }
   /** Server returned 429 with a retry-after; reschedule without burning an attempt. */
-  | { kind: 'rate_limited'; retryAfterMs: number; billable: true }
+  | { kind: 'rate_limited'; retryAfterMs: number; billable: false }
   /** Retryable: network / timeout / server (non-429). Burns a schedule slot. */
-  | { kind: 'retryable'; errorMessage?: string; billable: boolean }
+  | { kind: 'retryable'; errorMessage?: string; billable: false }
   /** Non-retryable: parse_error / layer1_reject / unknown endpoint. Terminal. */
-  | { kind: 'terminal'; errorMessage?: string; billable: boolean }
+  | { kind: 'terminal'; errorMessage?: string; billable: false }
   /** Paradoxical: `kind: 'queued'` from the API itself — shouldn't happen mid-drain. */
   | { kind: 'paradox'; errorMessage: string; billable: false };
 
@@ -291,13 +290,15 @@ export interface SyncDrainerConfig {
   /**
    * E11-006 insertion path. When provided, the drainer calls
    * `recordLlmCall(budgetDb, endpoint, { nowMs: now() })` AFTER any
-   * dispatched row whose `DispatchOutcome.billable === true` (success,
-   * rate-limited, server 5xx, parse_error, layer1_reject, low_confidence
-   * — everything that billed the upstream provider). DO NOT record on
-   * network/timeout/queued/paradox/unknown-endpoint — those did not
-   * bill quota. The drainer uses its OWN `nowMs` so a queued call
-   * drained later counts toward the day it actually FIRES (not the
-   * day it was queued) per the master-plan UTC-day budget rule.
+   * dispatched row whose `DispatchOutcome.billable === true`. Per the
+   * codex P1 follow-up, the only billable outcome is `kind: 'success'`
+   * — `rate_limited` / `retryable` / `terminal` / `paradox` are all
+   * `billable: false` because either (a) the row will re-fire on the
+   * schedule (counting now would over-count once the eventual success
+   * also records) or (b) the user got no usable result. The drainer
+   * uses its OWN `nowMs` so a queued call drained later counts toward
+   * the day it actually FIRES (not the day it was queued) per the
+   * master-plan UTC-day budget rule.
    *
    * Optional: when omitted (legacy compositions, isolated drainer
    * tests), the drainer is a no-op on the budget side. Production
@@ -634,9 +635,12 @@ async function dispatchRow(
   api: ApiClient,
 ): Promise<DispatchOutcome> {
   if (!isKnownEndpoint(row.endpoint)) {
+    // Unknown endpoint = schema-level reject; the request never built,
+    // never billed. Not billable.
     return {
       kind: 'terminal',
       errorMessage: `unknown endpoint '${row.endpoint}'`,
+      billable: false,
     };
   }
 
@@ -644,11 +648,13 @@ async function dispatchRow(
   try {
     payload = JSON.parse(row.payload_json);
   } catch (err) {
+    // Payload corruption — never reached the provider, never billed.
     return {
       kind: 'terminal',
       errorMessage: `payload JSON parse failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      billable: false,
     };
   }
 
@@ -684,32 +690,44 @@ async function dispatchRow(
  */
 function classify(result: ApiResult<unknown>): DispatchOutcome {
   if (result.ok) {
-    return { kind: 'success' };
+    // Terminal-success — the only billable outcome per E11-006 P1.
+    return { kind: 'success', billable: true };
   }
   switch (result.kind) {
     case 'server': {
       // Retry-after is the 429 signal in the client classification.
-      // 5xx (no retry-after) takes the retryable path.
-      if (typeof result.retry_after === 'number') {
+      // 5xx (no retry-after) takes the retryable path. Neither is
+      // billable — both will re-fire on the schedule and the eventual
+      // success records once. `Number.isFinite` (not `typeof ===
+      // 'number'`) because NaN passes typeof and would propagate as
+      // `retryAfterMs: NaN` (codex E11-006 P2).
+      if (Number.isFinite(result.retry_after)) {
         return {
           kind: 'rate_limited',
-          retryAfterMs: Math.max(0, result.retry_after) * 1_000,
+          retryAfterMs: Math.max(0, result.retry_after as number) * 1_000,
+          billable: false,
         };
       }
-      return { kind: 'retryable', errorMessage: result.message };
+      return { kind: 'retryable', errorMessage: result.message, billable: false };
     }
     case 'network':
     case 'timeout':
-      return { kind: 'retryable', errorMessage: result.message };
+      // Fetch never returned a usable result. Not billable.
+      return { kind: 'retryable', errorMessage: result.message, billable: false };
     case 'parse_error':
     case 'layer1_reject':
     case 'low_confidence':
-      return { kind: 'terminal', errorMessage: result.message };
+      // Terminal-non-success — the user got no usable result.
+      // Not billable; budget tracks user-perceived successes only.
+      return { kind: 'terminal', errorMessage: result.message, billable: false };
     case 'queued':
+      // Backend bouncing a drainer-issued request as queued is paradox
+      // (V1 backend serves synchronously). Not billable.
       return {
         kind: 'paradox',
         errorMessage:
           'API returned kind=queued; backend should not bounce drainer-issued requests in V1',
+        billable: false,
       };
   }
 }

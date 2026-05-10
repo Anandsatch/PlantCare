@@ -163,9 +163,13 @@ export function useIdentifyRequest(
         return coerced;
       }
 
-      // E11-006 insertion path. Fire-and-forget; never throws.
-      void recordIfBillable(result);
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits (codex E11-006 follow-up P2 — don't burn
+      // budget on stale-by-counter or post-unmount resolves).
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo],
@@ -174,9 +178,9 @@ export function useIdentifyRequest(
   function commitResult(
     result: ApiResult<IdentifyResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -186,6 +190,7 @@ export function useIdentifyRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { identify, status, lastResult };

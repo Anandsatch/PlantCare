@@ -20,30 +20,29 @@
  *   - one place to flip if we ever add an analytics emitter (V1 lock:
  *     no analytics beyond the SQLite row; the row IS the signal).
  *
- * # When to call it (insertion-path policy)
+ * # When to call it (insertion-path policy — codex E11-006 P1)
  *
- * Call `recordLlmCall(executor, endpoint, { nowMs })` AFTER an
- * `ApiResult` resolves with a kind that consumed quota:
+ * Call `recordLlmCall(executor, endpoint, { nowMs })` ONLY after a
+ * terminal-success `ApiResult`. Specifically:
  *
- *   - `ok: true`                                          → record
- *   - `ok: false, kind: 'low_confidence'`                 → record
- *   - `ok: false, kind: 'parse_error'`                    → record
- *   - `ok: false, kind: 'server'` (rate-limit / 5xx)      → record
- *   - `ok: false, kind: 'layer1_reject'`                  → record
- *     (the LLM router emitted the off-topic verdict — the upstream
- *     call still fired)
+ *   - `ok: true` → record
+ *   - any non-ok kind → DO NOT record
  *
- * DO NOT record on:
+ * Why narrower than "the provider billed":
  *
- *   - `ok: false, kind: 'queued'`     — call hasn't fired (offline / coerced)
- *   - `ok: false, kind: 'network'`    — fetch threw before reaching provider
- *   - `ok: false, kind: 'timeout'`    — fetch never reached the provider
+ *   - `server` (5xx / 429) is RETRYABLE — the SyncDrainer reschedules
+ *     and re-fires. A 5xx-success cycle would record twice (or more)
+ *     for one user-perceived attempt.
+ *   - `parse_error` / `layer1_reject` / `low_confidence` are paths
+ *     where the user got no usable result. The budget is a UX gate
+ *     (50 visible answers per day), not a provider-billing audit.
+ *   - `network` / `timeout` / `queued` never reached or never returned
+ *     a result.
  *
- * `network` and `timeout` are conservatively excluded even though a
- * timeout MAY have reached the provider — without a wire-level signal
- * that the upstream actually billed, we'd rather under-count than
- * over-count (the budget is a soft gate, and over-counting would
- * spuriously disable CTAs at 50 calls when the user never billed 50).
+ * The OpenRouter free-tier quota IS the upstream lock; the local
+ * SQLite counter is the in-app surface for the user's experience.
+ * Over-counting would spuriously disable CTAs the user perceives as
+ * earned attempts.
  *
  * # SyncDrainer integration
  *
@@ -205,61 +204,58 @@ export async function recordLlmCall(
 }
 
 /**
- * Predicate: does this `ApiResult` kind represent a call that consumed
- * upstream quota? See file header for the policy table. Pure function;
- * lifted out of the hooks so the four LLM hooks + the SyncDrainer all
- * read from one source of truth.
+ * Predicate: does this `ApiResult` represent a terminal-success that
+ * should bump the budget meter? Pure function; lifted out of the hooks
+ * so the four LLM hooks + the SyncDrainer all read from one source of
+ * truth.
  *
- * Accepts a `{ ok: boolean; kind?: string }` shape so callers don't
- * need to import `ApiResult<T>` (which is generic per response type).
+ * # Locked taxonomy — terminal-success ONLY (codex E11-006 P1)
  *
- * Locked taxonomy (codex risk #1):
- *   - `ok = true`               → record (success of any data shape)
- *   - `ok = false`:
- *     - `'low_confidence'`      → record (provider billed)
- *     - `'parse_error'`         → record (provider billed; we just
- *                                 couldn't parse the body)
- *     - `'server'`              → record (5xx / 429 — provider billed
- *                                 OR rate-limited; either way the
- *                                 request reached the provider)
- *     - `'layer1_reject'`       → record (LLM router emitted off-topic;
- *                                 the upstream call still fired)
- *     - `'queued'`              → DO NOT record (call hasn't fired)
- *     - `'network'`             → DO NOT record (fetch threw before
- *                                 reaching provider)
- *     - `'timeout'`             → DO NOT record (fetch never reached
- *                                 the provider; conservative under-
- *                                 count rather than spurious gate)
+ * The first WIP iteration of this file used a broader "consumed
+ * upstream quota" policy that recorded on `parse_error`,
+ * `layer1_reject`, `low_confidence`, and `server` because the provider
+ * had billed those calls. That over-counts:
  *
- * Any future kind that the api client emits MUST be classified here
- * explicitly. A `default: false` (silent skip) would silently
- * under-count a future billable kind; `default: true` would silently
- * over-count a future non-billable kind. The exhaustive switch trips
- * the type checker on the next API expansion so the policy is
- * relitigated explicitly.
+ *   - `server` (5xx / 429) is RETRYABLE: the row is rescheduled by
+ *     the SyncDrainer and fires again. A row that 5xxes 3 times before
+ *     succeeding would burn 4 budget slots for 1 user-perceived
+ *     attempt.
+ *   - `parse_error` / `layer1_reject` / `low_confidence` are surfaces
+ *     where the user gets NO LLM result (the parse fails or the router
+ *     rejects). Counting them against the daily budget would gate a
+ *     user out of the app on the strength of broken responses they
+ *     never saw — and the upstream eval / parser fix is the right
+ *     remediation, not a soft cap.
+ *
+ * The locked policy: the budget tracks meter the user *got value
+ * from* — not every byte the provider charged for. The OpenRouter
+ * free-tier quota is the upstream lock; the local SQLite counter is
+ * a UX surface, not a billing audit.
+ *
+ *   - `ok = true`               → record (success — the user got a result)
+ *   - `ok = false` (any kind)   → DO NOT record. The drainer will re-
+ *                                 fire `server` rows on schedule;
+ *                                 `parse_error` / `layer1_reject` /
+ *                                 `low_confidence` / `network` /
+ *                                 `timeout` / `queued` all leave the
+ *                                 user without a usable result, so
+ *                                 they don't burn budget.
+ *
+ * # Forward-compat
+ *
+ * Any new `kind` the api-client adds inherits the conservative
+ * default: not recorded. A future "billable, terminal, but ok=false"
+ * kind (none exists today) would need an explicit plumbing here AND
+ * a CHANGELOG-level review of the budget contract — not a silent
+ * default-on.
  */
 export function shouldRecordLlmCallResult(result: {
   readonly ok: boolean;
   readonly kind?: string;
 }): boolean {
-  if (result.ok) return true;
-  switch (result.kind) {
-    case 'low_confidence':
-    case 'parse_error':
-    case 'server':
-    case 'layer1_reject':
-      return true;
-    case 'queued':
-    case 'network':
-    case 'timeout':
-      return false;
-    default:
-      // Unknown kind → conservative: do not count. We'd rather under-
-      // count by one row than over-count and falsely disable CTAs at
-      // 50. A future kind addition should plumb through this switch
-      // explicitly rather than rely on the default arm.
-      return false;
-  }
+  // Terminal-success only. See header for the rationale on why we
+  // narrowed from "consumed quota" to "user-perceived success."
+  return result.ok === true;
 }
 
 function defaultOnError(err: unknown): void {

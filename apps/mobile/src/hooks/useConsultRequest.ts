@@ -261,10 +261,13 @@ export function useConsultRequest(
         return coerced;
       }
 
-      // E11-006 insertion path. Fire-and-forget; never throws into the
-      // consult chain. See useDiagnoseRequest for ordering rationale.
-      void recordIfBillable(result);
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits (codex E11-006 follow-up P2). Fire-and-
+      // forget; never throws into the consult chain.
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo],
@@ -282,9 +285,9 @@ export function useConsultRequest(
   function commitResult(
     result: ApiResult<ConsultResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -294,6 +297,7 @@ export function useConsultRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { consult, status, lastResult, reset };
