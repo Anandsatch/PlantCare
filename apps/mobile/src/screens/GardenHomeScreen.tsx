@@ -81,6 +81,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BackHandler } from 'react-native';
 
 import type { ApiClient } from '../api';
 import { PlantCareCameraView, type CameraCaptureResult, type CameraMode } from '../components/CameraView';
@@ -163,6 +164,26 @@ export type GardenHomeScreenProps = {
    * screen falls through to the real `compressPhoto`.
    */
   compressPhotoImpl?: (input: CompressPhotoInput) => Promise<CompressPhotoResult>;
+  /**
+   * Deep-link readiness — optional initial view-state. When omitted (the
+   * normal mount path) the screen starts at `'list'`. When `'camera'` is
+   * passed, the camera mounts directly using `initialMode` (defaults to
+   * `'identify'`). Future ticket: a notification-tap deep-link route opens
+   * Camera in diagnose mode by passing `initialView='camera'` +
+   * `initialMode='diagnose'`. Tests that mount the screen without props
+   * remain unaffected — both fields are pure additions.
+   *
+   * `'result'` is intentionally NOT a valid initial view: a deep-link can't
+   * hydrate a captured `photoUri` from a cold start, so result-state can
+   * only be reached through the in-app capture flow.
+   */
+  initialView?: 'list' | 'camera';
+  /**
+   * Initial camera mode when `initialView === 'camera'`. Ignored when
+   * `initialView` is `'list'` or omitted. Defaults to `'identify'` to match
+   * the FAB-tap entry point.
+   */
+  initialMode?: CameraMode;
   testID?: string;
 };
 
@@ -175,9 +196,22 @@ export function GardenHomeScreen({
   onLongPressFAB,
   nowMs,
   compressPhotoImpl,
+  initialView,
+  initialMode,
   testID,
 }: GardenHomeScreenProps) {
-  const [view, setView] = useState<GardenHomeView>({ kind: 'list' });
+  // Initial view derives from the deep-link prop pair (or defaults to list).
+  // We compute it lazily inside `useState`'s initializer so the cold-start
+  // value is the props value at first commit; subsequent changes to
+  // `initialView` are intentionally ignored — the screen owns its own view
+  // state once mounted, and a parent that re-renders with a different
+  // initialView shouldn't yank the user out of an in-flight capture flow.
+  const [view, setView] = useState<GardenHomeView>(() => {
+    if (initialView === 'camera') {
+      return { kind: 'camera', entryMode: initialMode ?? 'identify' };
+    }
+    return { kind: 'list' };
+  });
   // Mirror of `view` for callbacks that need to read entryMode without
   // re-creating themselves on every state change. Updated after commit (not
   // during render) so it always reflects the just-rendered state.
@@ -202,7 +236,9 @@ export function GardenHomeScreen({
   // reads its `mode` prop from THIS state at the moment of capture, not
   // from the entry-mode, so a user who flips the pill mid-flow gets the
   // captured-mode behavior they chose.
-  const [cameraMode, setCameraMode] = useState<CameraMode>('identify');
+  const [cameraMode, setCameraMode] = useState<CameraMode>(() =>
+    initialView === 'camera' ? initialMode ?? 'identify' : 'identify',
+  );
 
   // Tap "+" on the list → identify mode (also wired as the popover's "Add a
   // plant" item per the E3-004 contract — the popover invokes `onAddPlant`
@@ -358,6 +394,44 @@ export function GardenHomeScreen({
     });
   }, []);
 
+  // ── Android hardware back: result view-state ──────────────────────────
+  //
+  // `<PlantCareCameraView>` already registers its own `hardwareBackPress`
+  // listener (E5-004) and routes to `onCancel` (which is our `dismissToList`).
+  // `<PlantsListScreen>` is the app root — Android's default back behavior
+  // there is "exit the app," and we don't override it. `<CameraResultScreen>`
+  // does NOT own a back handler, so the result view-state's hardware-back is
+  // ours to define here, per the master-plan rescue-path semantics:
+  //
+  //   - result + entryMode='diagnose' → dismiss to list, discard the result.
+  //     The transient contract: a Quick Diagnose flow ending at "back" lands
+  //     on the garden, not the camera, because re-entering the rescue camera
+  //     after seeing a result is a new gesture (long-press + popover).
+  //   - result + entryMode='identify' → re-enter camera in entry-mode. Mirrors
+  //     "Try a different photo" semantics so back-from-result on the
+  //     identify path doesn't strand a user who just wants to retake.
+  //
+  // BackHandler returns `true` from the listener to signal "we handled it,
+  // don't propagate." When the view isn't `'result'`, we return `false` so
+  // the camera's own listener (or the OS default) sees it.
+  useEffect(() => {
+    const onBack = (): boolean => {
+      const current = viewRef.current;
+      if (current.kind !== 'result') return false;
+      if (current.entryMode === 'identify') {
+        // Discard the diagnose result, re-mount camera in entry-mode.
+        setCameraMode(current.entryMode);
+        setView({ kind: 'camera', entryMode: current.entryMode });
+        return true;
+      }
+      // Diagnose entry: dismiss to list, transient contract.
+      dismissToList();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [dismissToList]);
+
   // "Pick from list" on `low_confidence`. V1 routes to dismiss; future
   // E5-010 wiring will lift this to the species-picker entry point. We don't
   // distinguish identify vs diagnose here because the manual species picker
@@ -368,46 +442,54 @@ export function GardenHomeScreen({
   }, [dismissToList]);
 
   // ── Render ────────────────────────────────────────────────────────────
-
-  if (view.kind === 'list') {
-    return (
-      <PlantsListScreen
-        onAddPlant={handleAddPlant}
-        onQuickDiagnose={handleQuickDiagnose}
-        onLongPressFAB={onLongPressFAB}
-        onPlantPress={onPlantPress}
-        nowMs={nowMs}
-        testID={testID ?? 'garden-home-list'}
-      />
-    );
+  //
+  // Switch on the discriminator and let TypeScript exhaustiveness-check the
+  // `default` branch. Codex P3 fix: a future view-state addition (e.g. an
+  // 'add-plant-form' state when E5-010 wires AddPlantScreen as an in-flow
+  // step) will trip the `never` assignment at compile-time, forcing the
+  // author to handle the new state explicitly.
+  switch (view.kind) {
+    case 'list':
+      return (
+        <PlantsListScreen
+          onAddPlant={handleAddPlant}
+          onQuickDiagnose={handleQuickDiagnose}
+          onLongPressFAB={onLongPressFAB}
+          onPlantPress={onPlantPress}
+          nowMs={nowMs}
+          testID={testID ?? 'garden-home-list'}
+        />
+      );
+    case 'camera':
+      return (
+        <PlantCareCameraView
+          mode={cameraMode}
+          onModeChange={setCameraMode}
+          onCapture={handleCapture}
+          onCancel={dismissToList}
+          testID={testID ? `${testID}-camera` : 'garden-home-camera'}
+        />
+      );
+    case 'result':
+      return (
+        <CameraResultScreen
+          apiClient={apiClient}
+          photoUri={view.photoUri}
+          mode={view.captureMode}
+          onSave={handleResultSave}
+          onSavePhotoOnly={handleResultSavePhotoOnly}
+          onReportError={handleResultReportError}
+          onRetake={handleResultRetake}
+          onPickFromList={handlePickFromList}
+          onClose={dismissToList}
+          compressPhotoImpl={compressPhotoImpl}
+          testID={testID ? `${testID}-result` : 'garden-home-result'}
+        />
+      );
+    default: {
+      const _exhaustive: never = view;
+      void _exhaustive;
+      return null;
+    }
   }
-
-  if (view.kind === 'camera') {
-    return (
-      <PlantCareCameraView
-        mode={cameraMode}
-        onModeChange={setCameraMode}
-        onCapture={handleCapture}
-        onCancel={dismissToList}
-        testID={testID ? `${testID}-camera` : 'garden-home-camera'}
-      />
-    );
-  }
-
-  // view.kind === 'result'
-  return (
-    <CameraResultScreen
-      apiClient={apiClient}
-      photoUri={view.photoUri}
-      mode={view.captureMode}
-      onSave={handleResultSave}
-      onSavePhotoOnly={handleResultSavePhotoOnly}
-      onReportError={handleResultReportError}
-      onRetake={handleResultRetake}
-      onPickFromList={handlePickFromList}
-      onClose={dismissToList}
-      compressPhotoImpl={compressPhotoImpl}
-      testID={testID ? `${testID}-result` : 'garden-home-result'}
-    />
-  );
 }

@@ -30,7 +30,7 @@
 import { lightTheme, type Theme } from '@plantcare/theme';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import React from 'react';
-import { AccessibilityInfo, AppState } from 'react-native';
+import { AccessibilityInfo, AppState, BackHandler } from 'react-native';
 
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../../api';
 import type { Plant } from '../../db/types';
@@ -185,7 +185,7 @@ function makeApiClient(
   return {
     identify: jest.fn() as never,
     diagnose: jest.fn(
-      diagnoseImpl ?? (async () => ({ ok: true, data: SUCCESS_DATA })),
+      diagnoseImpl ?? ((async () => ({ ok: true, data: SUCCESS_DATA })) as () => Promise<ApiResult<DiagnoseResponse>>),
     ) as never,
     consult: jest.fn() as never,
     review: jest.fn() as never,
@@ -701,5 +701,157 @@ describe('GardenHomeScreen — retake re-mounts camera in entry mode', () => {
     expect(screen.getByTestId('camera-mode-segment-diagnose').props.accessibilityState?.selected).toBe(
       true,
     );
+  });
+});
+
+// =========================================================================
+// Deep-link readiness — initialView + initialMode props
+// =========================================================================
+
+describe('GardenHomeScreen — deep-link initial view', () => {
+  it('initialView=camera + initialMode=diagnose mounts camera in diagnose mode at first commit', async () => {
+    render(
+      <GardenHomeScreen
+        apiClient={makeApiClient()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        compressPhotoImpl={makeCompressImpl()}
+        initialView="camera"
+        initialMode="diagnose"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('mock-expo-camera-view')).toBeOnTheScreen(),
+    );
+    expect(
+      screen.getByTestId('camera-mode-segment-diagnose').props.accessibilityState?.selected,
+    ).toBe(true);
+    // List FAB should NOT be on screen — we deep-linked past the list.
+    expect(screen.queryByTestId('garden-home-list-fab')).toBeNull();
+  });
+
+  it('initialView=camera with no initialMode defaults to identify', async () => {
+    render(
+      <GardenHomeScreen
+        apiClient={makeApiClient()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        compressPhotoImpl={makeCompressImpl()}
+        initialView="camera"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('mock-expo-camera-view')).toBeOnTheScreen(),
+    );
+    expect(
+      screen.getByTestId('camera-mode-segment-identify').props.accessibilityState?.selected,
+    ).toBe(true);
+  });
+
+  it('omitted initialView prop falls through to list (backwards compat — pre-existing tests already exercise this)', async () => {
+    await renderHome();
+    expect(screen.queryByTestId('garden-home-list-fab')).toBeOnTheScreen();
+    expect(screen.queryByTestId('mock-expo-camera-view')).toBeNull();
+  });
+});
+
+// =========================================================================
+// Android hardware-back: result view-state routing
+// =========================================================================
+
+describe('GardenHomeScreen — hardware back from result view', () => {
+  // Helper: drive Android's hardwareBackPress event with the same precedence
+  // semantics as RN BackHandler — listeners run in REVERSE registration
+  // order (LIFO), and the first listener that returns true stops propagation
+  // (codex P3 catch). We also model `remove()` so a listener that
+  // unregisters before back is pressed (e.g. a CameraView that unmounted
+  // when we transitioned to the result view) doesn't fire.
+  const liveListeners: Array<() => boolean | null | undefined> = [];
+
+  function fireHardwareBack(): boolean {
+    // LIFO traversal mirrors RN's internal stack.
+    for (let i = liveListeners.length - 1; i >= 0; i -= 1) {
+      const listener = liveListeners[i];
+      const handled = listener();
+      if (handled === true) return true;
+    }
+    return false;
+  }
+
+  beforeEach(() => {
+    liveListeners.length = 0;
+    jest.spyOn(BackHandler, 'addEventListener').mockImplementation(((
+      event: string,
+      listener: () => boolean | null | undefined,
+    ) => {
+      if (event === 'hardwareBackPress') {
+        liveListeners.push(listener);
+      }
+      return {
+        remove: () => {
+          const idx = liveListeners.indexOf(listener);
+          if (idx >= 0) liveListeners.splice(idx, 1);
+        },
+      };
+    }) as never);
+  });
+
+  it('diagnose entry → result → hardware-back dismisses to list (transient discard)', async () => {
+    mockedTakePictureAsync.mockResolvedValue({
+      uri: 'file:///cache/raw.jpg',
+      width: 4032,
+      height: 3024,
+    });
+    const onIdentifySave = jest.fn();
+    await renderHome({ onIdentifySave });
+    fireEvent(screen.getByTestId('garden-home-list-fab'), 'longPress');
+    fireEvent.press(screen.getByTestId('garden-home-list-fab-popover-item-diagnose'));
+    await waitFor(() => expect(screen.queryByTestId('mock-expo-camera-view')).toBeOnTheScreen());
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('camera-shutter'));
+    });
+    await waitFor(
+      () => expect(screen.queryByTestId('garden-home-result')).toBeOnTheScreen(),
+      { timeout: 3000 },
+    );
+
+    act(() => {
+      fireHardwareBack();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('garden-home-list-fab')).toBeOnTheScreen(),
+    );
+    expect(onIdentifySave).not.toHaveBeenCalled();
+  });
+
+  it('identify entry → result → hardware-back routes to camera in entry-mode (retake semantic)', async () => {
+    mockedTakePictureAsync.mockResolvedValue({
+      uri: 'file:///cache/raw.jpg',
+      width: 4032,
+      height: 3024,
+    });
+    await renderHome();
+    fireEvent.press(screen.getByTestId('garden-home-list-fab'));
+    await waitFor(() => expect(screen.queryByTestId('mock-expo-camera-view')).toBeOnTheScreen());
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('camera-shutter'));
+    });
+    await waitFor(
+      () => expect(screen.queryByTestId('garden-home-result')).toBeOnTheScreen(),
+      { timeout: 3000 },
+    );
+
+    act(() => {
+      fireHardwareBack();
+    });
+
+    // Camera re-mounted in identify mode (entry mode).
+    await waitFor(() =>
+      expect(screen.queryByTestId('mock-expo-camera-view')).toBeOnTheScreen(),
+    );
+    expect(
+      screen.getByTestId('camera-mode-segment-identify').props.accessibilityState?.selected,
+    ).toBe(true);
   });
 });
