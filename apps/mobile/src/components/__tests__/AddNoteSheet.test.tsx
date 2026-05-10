@@ -672,3 +672,143 @@ describe('<AddNoteSheet />', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 });
+
+// ─── E11-006 budget gate tests ───────────────────────────────────────────
+
+describe('<AddNoteSheet /> — E11-006 budget gate', () => {
+  function renderGated(
+    overrides: {
+      budgetGate?: { disabled: boolean };
+      consultImpl?: (
+        body: { note: string; plant_context?: unknown },
+      ) => Promise<ApiResult<ConsultResponse>>;
+    } = {},
+  ) {
+    const onSave = jest.fn();
+    const onCancel = jest.fn();
+    const { client, consultSpy } = makeClient(
+      overrides.consultImpl ??
+        (async () => ({ ok: true, data: RECOMMENDATION })),
+    );
+    const utils = render(
+      <AddNoteSheet
+        open
+        onSave={onSave as never}
+        onCancel={onCancel as never}
+        apiClient={client}
+        plantNickname="Steve"
+        netInfo={{ isConnected: () => true }}
+        budgetGate={overrides.budgetGate}
+        testID="add-note-sheet"
+      />,
+    );
+    return { ...utils, onSave, onCancel, consultSpy };
+  }
+
+  it('passes through (no gate) when budgetGate is omitted — back-compat', async () => {
+    const { consultSpy } = renderGated({});
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'Just repotted');
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(consultSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Save and skips consult() when budgetGate.disabled=true', async () => {
+    const { consultSpy } = renderGated({ budgetGate: { disabled: true } });
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'Just repotted');
+
+    // The CTA is rendered but disabled. fireEvent.press is a no-op on a
+    // disabled EditorialButton (the disabled flag short-circuits the
+    // Pressable's onPress). Belt-and-braces: even if a future button
+    // change leaks the press through, handleSavePress short-circuits
+    // on `budgetDisabled` before calling consult.
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(consultSpy).not.toHaveBeenCalled();
+  });
+
+  it('swaps the Save CTA label to "Daily limit reached" when disabled', async () => {
+    renderGated({ budgetGate: { disabled: true } });
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'Just repotted');
+    expect(screen.getByText('Daily limit reached')).toBeOnTheScreen();
+    expect(screen.queryByText('Save & analyze')).toBeNull();
+  });
+
+  it('swaps the accessibility label too (limit-reached announcement)', async () => {
+    renderGated({ budgetGate: { disabled: true } });
+    const cta = screen.getByTestId('add-note-sheet-save');
+    expect(cta.props.accessibilityLabel).toBe(
+      'Daily LLM limit reached. Save and analyze unavailable until midnight UTC.',
+    );
+  });
+
+  it('keeps the default label when budgetGate.disabled=false', async () => {
+    const { consultSpy } = renderGated({ budgetGate: { disabled: false } });
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'Just repotted');
+    expect(screen.getByText('Save & analyze')).toBeOnTheScreen();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(consultSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT break the queued offline path when gate is disabled (gate wins)', async () => {
+    // Even if the queued path WOULD have fired offline, the gate cuts
+    // the consult() call entirely — the user-perceived state is "out
+    // of budget", same as online.
+    const onSave = jest.fn();
+    const { client, consultSpy } = makeClient(
+      async () => ({ ok: false, kind: 'queued' }),
+    );
+    render(
+      <AddNoteSheet
+        open
+        onSave={onSave as never}
+        onCancel={jest.fn() as never}
+        apiClient={client}
+        plantNickname="Steve"
+        netInfo={{ isConnected: () => false }}
+        budgetGate={{ disabled: true }}
+        testID="add-note-sheet"
+      />,
+    );
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'leaves drooping');
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(consultSpy).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('does NOT break the queued offline path when gate is enabled (queued still works)', async () => {
+    // Sanity-check the inverse: with the gate enabled, the offline
+    // path queues normally.
+    const onSave = jest.fn();
+    const { client } = makeClient(async () => ({ ok: false, kind: 'queued' }));
+    render(
+      <AddNoteSheet
+        open
+        onSave={onSave as never}
+        onCancel={jest.fn() as never}
+        apiClient={client}
+        plantNickname="Steve"
+        netInfo={{ isConnected: () => false }}
+        budgetGate={{ disabled: false }}
+        testID="add-note-sheet"
+      />,
+    );
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'leaves drooping');
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({ status: 'queued' });
+  });
+});

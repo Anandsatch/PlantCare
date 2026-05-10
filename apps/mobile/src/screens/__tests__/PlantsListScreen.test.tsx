@@ -79,13 +79,17 @@ function makeDb(rows: Array<{ plant_id: string; last_watered_at: number }>): Scr
  * Inert E11-005 budget executor: returns count=0. Used to keep the
  * existing screen tests focused on plants-list behavior — meter-specific
  * assertions live in their own block at the bottom.
+ *
+ * Returns an `LlmBudgetExecutor` with a generic `getFirstAsync<T>` so
+ * the executor satisfies the hook's read surface without a runtime
+ * cast at every call site (codex E11-006 follow-up P1: the prior
+ * specialized return type rejected against the generic interface).
  */
-function makeInertBudgetDb(count = 0) {
+function makeInertBudgetDb(count = 0): import('../../hooks/useLlmBudget').LlmBudgetExecutor {
   return {
-    getFirstAsync: jest.fn(async () => ({ count })) as unknown as (
-      sql: string,
-      params: number[],
-    ) => Promise<{ count: number } | null>,
+    async getFirstAsync<T>(_sql: string, _params: number[]): Promise<T | null> {
+      return { count } as unknown as T;
+    },
   };
 }
 
@@ -1095,13 +1099,12 @@ describe('PlantsListScreen — budget meter (E11-005)', () => {
 
     // Hold the budget read open so status stays at 'loading'.
     let releaseBudget!: () => void;
-    const slowBudgetDb = {
-      getFirstAsync: jest.fn(
-        () =>
-          new Promise<{ count: number } | null>((resolve) => {
-            releaseBudget = () => resolve({ count: 0 });
-          }),
-      ) as unknown as (sql: string, params: number[]) => Promise<{ count: number } | null>,
+    const slowBudgetDb: import('../../hooks/useLlmBudget').LlmBudgetExecutor = {
+      async getFirstAsync<T>(_sql: string, _params: number[]): Promise<T | null> {
+        return new Promise<T | null>((resolve) => {
+          releaseBudget = () => resolve({ count: 0 } as unknown as T);
+        });
+      },
     };
 
     render(
