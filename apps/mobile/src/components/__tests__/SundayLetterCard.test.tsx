@@ -1,5 +1,6 @@
 import { darkTheme, lightTheme } from '@plantcare/theme';
 import { fireEvent, render } from '@testing-library/react-native';
+import * as React from 'react';
 
 jest.mock('../../hooks/useReduceMotion', () => ({
   useReduceMotion: jest.fn(),
@@ -539,5 +540,135 @@ describe('SundayLetterCard component', () => {
       />,
     );
     expect(getByTestId('card')).toBeOnTheScreen();
+  });
+});
+
+// ============================================================================
+// E9-005 additions: Strict-mode latch + no-Intl fallback verification.
+// ============================================================================
+
+describe('SundayLetterCard — Strict-mode double-mount', () => {
+  beforeEach(() => {
+    mockedUseTheme.mockReturnValue(lightTheme);
+    mockedUseReduceMotion.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    mockedUseTheme.mockReset();
+    mockedUseReduceMotion.mockReset();
+  });
+
+  it('Strict-mode actually double-mounts (probe useEffect fires ≥ 2 times); SundayLetterCard onOpen still fires exactly once on tap', () => {
+    // Codex P2 catch: a passing "no double fire" test is meaningless if
+    // the test renderer didn't actually do the strict-mode double-mount in
+    // the first place. We prove the double-mount BEFORE asserting the
+    // contract. A sibling probe component captures useEffect runs across
+    // the StrictMode mount→unmount→re-mount cycle: under StrictMode the
+    // probe's effect fires 2+ times; without StrictMode it fires once.
+    let probeEffectRuns = 0;
+    function MountProbe(): React.ReactElement {
+      React.useEffect(() => {
+        probeEffectRuns += 1;
+      });
+      return <></>;
+    }
+
+    const onOpen = jest.fn();
+    const { getByTestId } = render(
+      <React.StrictMode>
+        <MountProbe />
+        <SundayLetterCard
+          nowMs={SUN_MAY_03}
+          onOpen={onOpen}
+          onDismiss={jest.fn()}
+          testID="card"
+        />
+      </React.StrictMode>,
+    );
+    // Sanity: StrictMode actually did the double-invocation. If this fails,
+    // the test environment isn't running in strict mode and the rest of
+    // the assertion is meaningless.
+    expect(probeEffectRuns).toBeGreaterThanOrEqual(2);
+
+    fireEvent.press(getByTestId('card-open'));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('Strict-mode mount: shouldRender helper is pure — repeated calls return the same answer (no hidden state)', () => {
+    // The helper is exported for parents to gate mount. If it ever leaked
+    // module-scoped state (e.g. memoized "we already showed it" map keyed
+    // by nowMs), strict-mode parents would call it twice and get divergent
+    // answers. Lock the contract: same inputs → same output, every call.
+    const a = shouldRender(SUN_MAY_03, null, null);
+    const b = shouldRender(SUN_MAY_03, null, null);
+    const c = shouldRender(SUN_MAY_03, null, null);
+    expect(a).toBe(true);
+    expect(b).toBe(true);
+    expect(c).toBe(true);
+
+    // And the negative case stays negative across repeated calls.
+    expect(shouldRender(MON_MAY_04, null, null)).toBe(false);
+    expect(shouldRender(MON_MAY_04, null, null)).toBe(false);
+  });
+
+  it('Strict-mode with reduce-motion: opacity remains 1 after the StrictMode mount→unmount→mount cycle', () => {
+    // The fade-in is gated by hasPlayedRef. Under StrictMode the ref is
+    // re-allocated for the second mount, but the reduce-motion early-return
+    // path in the effect snaps opacity to 1 and marks the ref as played
+    // before any timing call could happen. Lock that contract.
+    mockedUseReduceMotion.mockReturnValue(true);
+    const { getByTestId } = render(
+      <React.StrictMode>
+        <SundayLetterCard
+          nowMs={SUN_MAY_03}
+          onOpen={jest.fn()}
+          onDismiss={jest.fn()}
+          testID="card"
+        />
+      </React.StrictMode>,
+    );
+    const card = getByTestId('card');
+    const opacityStyle = flatten(card.props.style).opacity as
+      | { __getValue: () => number }
+      | number
+      | undefined;
+    const value =
+      typeof opacityStyle === 'number'
+        ? opacityStyle
+        : opacityStyle && '__getValue' in opacityStyle
+          ? opacityStyle.__getValue()
+          : undefined;
+    expect(value).toBe(1);
+  });
+});
+
+describe('SundayLetterCard — Hermes-without-Intl fallback (E3-001 propagation)', () => {
+  // The card surface composes title + body + two CTA labels. None of the
+  // strings are date-formatted at the SundayLetterCard layer — `TITLE_TEXT`,
+  // `BODY_TEXT`, `OPEN_LABEL`, `DISMISS_LABEL` are all static. Lock that
+  // contract so a future "show the date in the body copy" addition has to
+  // explicitly route through the MONTH_SHORT fallback used by other surfaces.
+  it('renders zero calls to toLocaleDateString / Intl.DateTimeFormat on mount', () => {
+    const localeSpy = jest.spyOn(Date.prototype, 'toLocaleDateString');
+    const intlSpy = jest.spyOn(Intl, 'DateTimeFormat');
+    try {
+      mockedUseTheme.mockReturnValue(lightTheme);
+      mockedUseReduceMotion.mockReturnValue(false);
+      render(
+        <SundayLetterCard
+          nowMs={SUN_MAY_03}
+          onOpen={jest.fn()}
+          onDismiss={jest.fn()}
+          testID="card"
+        />,
+      );
+      expect(localeSpy).toHaveBeenCalledTimes(0);
+      expect(intlSpy).toHaveBeenCalledTimes(0);
+    } finally {
+      localeSpy.mockRestore();
+      intlSpy.mockRestore();
+      mockedUseTheme.mockReset();
+      mockedUseReduceMotion.mockReset();
+    }
   });
 });
