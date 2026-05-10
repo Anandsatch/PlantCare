@@ -8,6 +8,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 
 import type { ApiClient, ApiResult, IdentifyResponse } from '../../api';
 import { useIdentifyRequest, type NetInfoLike } from '../useIdentifyRequest';
+import { freshQueueDb, readAllQueueRows } from './offlineQueueTestHelpers';
 
 const SUCCESS_DATA: IdentifyResponse = {
   species_slug: 'monstera_deliciosa',
@@ -202,5 +203,155 @@ describe('useIdentifyRequest', () => {
     });
 
     expect(result.current.lastResult).toEqual(result2);
+  });
+
+  // ─── E7-004: real offline enqueue ────────────────────────────────────
+
+  describe('E7-004 offline enqueue', () => {
+    it('offline pre-flight: netInfo=false → no api call, sync_queue gets one row, hook returns queued', async () => {
+      const { client, identifySpy } = makeApiClient(async () => ({
+        ok: true,
+        data: SUCCESS_DATA,
+      }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useIdentifyRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      let returned: ApiResult<IdentifyResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.identify({
+          photoUri: 'file:///documentDirectory/id.jpg',
+        });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(identifySpy).not.toHaveBeenCalled();
+
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.endpoint).toBe('identify');
+      expect(rows[0]?.ref_table).toBe('identify');
+      expect(rows[0]?.status).toBe('pending');
+      const parsed = JSON.parse(rows[0]!.payload_json) as {
+        image: { uri: string };
+      };
+      expect(parsed.image.uri).toBe('file:///documentDirectory/id.jpg');
+    });
+
+    it('online + apiClient returns kind:network → sync_queue gets one row', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useIdentifyRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      let returned: ApiResult<IdentifyResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.identify({ photoUri: 'file:///x.jpg' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(readAllQueueRows(raw)).toHaveLength(1);
+    });
+
+    it('online + apiClient returns ok → no sync_queue row', async () => {
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useIdentifyRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.identify({ photoUri: 'file:///x.jpg' });
+      });
+
+      expect(result.current.status).toBe('success');
+      expect(readAllQueueRows(raw)).toHaveLength(0);
+    });
+
+    it.each([
+      ['timeout', { ok: false, kind: 'timeout' as const }],
+      ['server', { ok: false, kind: 'server' as const }],
+      ['parse_error', { ok: false, kind: 'parse_error' as const }],
+      ['low_confidence', { ok: false, kind: 'low_confidence' as const }],
+      ['layer1_reject', { ok: false, kind: 'layer1_reject' as const }],
+    ])(
+      'online + non-retryable kind=%s → NO sync_queue row',
+      async (_name, apiResult) => {
+        const { client } = makeApiClient(async () => apiResult as ApiResult<IdentifyResponse>);
+        const { raw, q } = await freshQueueDb();
+
+        const { result } = renderHook(() =>
+          useIdentifyRequest({
+            apiClient: client,
+            netInfo: makeNetInfo(true),
+            offlineQueue: { db: q },
+          }),
+        );
+
+        await act(async () => {
+          await result.current.identify({ photoUri: 'file:///x.jpg' });
+        });
+
+        expect(readAllQueueRows(raw)).toHaveLength(0);
+      },
+    );
+
+    it('two consecutive identical requests fired before drain → ONE sync_queue row', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useIdentifyRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.identify({ photoUri: 'file:///same.jpg' });
+        await result.current.identify({ photoUri: 'file:///same.jpg' });
+      });
+
+      expect(readAllQueueRows(raw)).toHaveLength(1);
+    });
+
+    it('without offlineQueue config, legacy behavior preserved', async () => {
+      const { client, identifySpy } = makeApiClient(async () => ({
+        ok: true,
+        data: SUCCESS_DATA,
+      }));
+      const { result } = renderHook(() =>
+        useIdentifyRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+        }),
+      );
+
+      let returned: ApiResult<IdentifyResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.identify({ photoUri: 'file:///x.jpg' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(identifySpy).not.toHaveBeenCalled();
+    });
   });
 });

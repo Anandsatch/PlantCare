@@ -46,6 +46,15 @@ export {
 } from './usePersistNote';
 
 export {
+  enqueueOffline,
+  fnv1a32Hex,
+  hashStable,
+  safeEnqueue,
+  type EnqueueWiring,
+  type OfflineQueueConfig,
+} from './offlineEnqueue';
+
+export {
   useMarkWatered,
   createMarkWateredApi,
   MARK_WATERED_DEBOUNCE_MS,
