@@ -62,6 +62,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../api';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 
 /**
  * Optional plant context attached to a diagnose request. Shape matches the
@@ -105,6 +110,18 @@ export type UseDiagnoseRequestConfig = {
    * client's `network` kind handles the actual offline detection today.
    */
   netInfo?: NetInfoLike;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'diagnose')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota (`ok`, `low_confidence`,
+   * `parse_error`, `server`, `layer1_reject`). DO NOT record on
+   * `'queued'` (call hasn't fired) or `'network'`/`'timeout'` (call
+   * never reached the provider) — see `lib/llmBudget.ts` for the full
+   * policy. Optional: callers that aren't yet wired (older composition
+   * paths, tests of the diagnose surface itself) leave it unset and
+   * the hook is a no-op on the budget side.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type DiagnoseInput = {
@@ -143,7 +160,7 @@ export type UseDiagnoseRequestReturn = {
 export function useDiagnoseRequest(
   config: UseDiagnoseRequestConfig,
 ): UseDiagnoseRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
 
   const [status, setStatus] = useState<DiagnoseStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<DiagnoseResponse> | null>(
@@ -168,6 +185,44 @@ export function useDiagnoseRequest(
   // first request + retried second request commonly resolve out of order).
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // Stable ref for the budget executor. The caller usually passes a
+  // factory (`() => openDb()`) which allocates fresh identity per
+  // render; routing through a ref keeps `diagnose` referentially stable
+  // and avoids re-deriving the executor on every render. Same shape as
+  // the dbRef pattern in `useLlmBudget` (codex P3 from E11-005 review).
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  /**
+   * Resolve the budget writer if it's a factory. Errors are swallowed
+   * (best-effort: the LLM call already succeeded; failing the budget
+   * write isn't worth aborting the user's response).
+   */
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort budget insertion. Routes through the lib's
+   * `recordLlmCall` so the policy table (which kinds count) lives in
+   * one place. Always swallows errors — the caller's promise chain
+   * continues normally on a budget-write failure.
+   */
+  async function recordIfBillable(result: ApiResult<DiagnoseResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'diagnose');
+  }
 
   const diagnose = useCallback(
     async (input: DiagnoseInput): Promise<ApiResult<DiagnoseResponse>> => {
@@ -233,12 +288,26 @@ export function useDiagnoseRequest(
       // strictly better than the alternative (an error card the user
       // can't act on without changing networks).
       if (!result.ok && result.kind === 'network') {
+        // E11-006 insertion path: do NOT record. `network` means the
+        // fetch threw before reaching the provider; no quota was
+        // billed. The coercion to `queued` is a UX surface choice; it
+        // does NOT change the billable-vs-not classification.
         const coerced: ApiResult<DiagnoseResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
       }
 
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits — i.e., this call wasn't superseded by a
+      // newer call AND the component is still mounted. Codex
+      // E11-006 follow-up P2: firing the budget write before the
+      // commit-time guard could over-count when a stale resolve
+      // races with reset()/unmount. Best-effort: still never
+      // throws into the diagnose chain.
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo],
@@ -254,9 +323,9 @@ export function useDiagnoseRequest(
   function commitResult(
     result: ApiResult<DiagnoseResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -266,6 +335,7 @@ export function useDiagnoseRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { diagnose, status, lastResult };
