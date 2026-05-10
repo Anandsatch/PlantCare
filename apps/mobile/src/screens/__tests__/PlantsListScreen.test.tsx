@@ -74,6 +74,20 @@ function makeDb(rows: Array<{ plant_id: string; last_watered_at: number }>): Scr
   };
 }
 
+/**
+ * Inert E11-005 budget executor: returns count=0. Used to keep the
+ * existing screen tests focused on plants-list behavior — meter-specific
+ * assertions live in their own block at the bottom.
+ */
+function makeInertBudgetDb(count = 0) {
+  return {
+    getFirstAsync: jest.fn(async () => ({ count })) as unknown as (
+      sql: string,
+      params: number[],
+    ) => Promise<{ count: number } | null>,
+  };
+}
+
 function makePlantsApi(plants: Plant[]) {
   return {
     list: jest.fn(async () => plants),
@@ -631,13 +645,15 @@ describe('PlantsListScreen — refresh + AppState resume', () => {
     mockedUsePlants.mockReturnValue(api);
     const db = makeDb([]);
 
-    // Capture the AppState listener so we can fire it manually.
-    let listener: ((s: string) => void) | null = null;
+    // Capture EVERY AppState listener (the screen + the E11-005
+    // useLlmBudget hook both subscribe). Firing only the last
+    // registered listener would miss the screen's load() trigger.
+    const listeners: Array<(s: string) => void> = [];
     const removeMock = jest.fn();
     const addEventListenerSpy = jest
       .spyOn(AppState, 'addEventListener')
       .mockImplementation((_event: unknown, fn: unknown) => {
-        listener = fn as (s: string) => void;
+        listeners.push(fn as (s: string) => void);
         return { remove: removeMock } as unknown as ReturnType<
           typeof AppState.addEventListener
         >;
@@ -649,16 +665,18 @@ describe('PlantsListScreen — refresh + AppState resume', () => {
         onPlantPress={jest.fn()}
         nowMs={NOW}
         db={db}
+        budgetDb={makeInertBudgetDb()}
       />,
     );
 
     await waitFor(() => expect(screen.queryByTestId('plant-card-a')).toBeOnTheScreen());
     expect(api.list).toHaveBeenCalledTimes(1);
-    expect(listener).not.toBeNull();
+    expect(listeners.length).toBeGreaterThanOrEqual(1);
 
-    // Background → foreground transition.
+    // Background → foreground transition. Fan out to every captured
+    // subscriber.
     await act(async () => {
-      listener!('active');
+      listeners.forEach((l) => l('active'));
     });
     await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
 
@@ -709,12 +727,13 @@ describe('PlantsListScreen — resume race', () => {
     };
     mockedUsePlants.mockReturnValue(api);
 
-    let listener: ((s: string) => void) | null = null;
+    // Capture every listener — the screen + useLlmBudget both subscribe.
+    const listeners: Array<(s: string) => void> = [];
     const removeMock = jest.fn();
     const addEventListenerSpy = jest
       .spyOn(AppState, 'addEventListener')
       .mockImplementation((_event: unknown, fn: unknown) => {
-        listener = fn as (s: string) => void;
+        listeners.push(fn as (s: string) => void);
         return { remove: removeMock } as unknown as ReturnType<
           typeof AppState.addEventListener
         >;
@@ -726,13 +745,14 @@ describe('PlantsListScreen — resume race', () => {
         onPlantPress={jest.fn()}
         nowMs={NOW}
         db={makeDb([])}
+        budgetDb={makeInertBudgetDb()}
       />,
     );
 
     // Trigger AppState 'active' BEFORE the initial load resolves.
-    expect(listener).not.toBeNull();
+    expect(listeners.length).toBeGreaterThanOrEqual(1);
     await act(async () => {
-      listener!('active');
+      listeners.forEach((l) => l('active'));
     });
 
     // Resolve the FRESH load first.
@@ -1041,5 +1061,112 @@ describe('PlantsListScreen — unmount safety', () => {
       expect.stringMatching(/Can't perform a React state update on an unmounted component/),
     );
     errorSpy.mockRestore();
+  });
+});
+
+// =========================================================================
+// E11-005 — Budget meter "37/50 TODAY" in header
+// =========================================================================
+
+describe('PlantsListScreen — budget meter (E11-005)', () => {
+  it('renders the meter under the eyebrow once the count read is ready', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant({ id: 'a' })]));
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+        budgetDb={makeInertBudgetDb(37)}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-budget-meter')).toBeOnTheScreen(),
+    );
+    // Visible label is the small-caps "37/50 TODAY" string.
+    expect(screen.getByTestId('plants-list-budget-meter')).toHaveTextContent('37/50 TODAY');
+  });
+
+  it('does NOT render "0/50" while the count read is in flight (null-state guard)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant({ id: 'a' })]));
+
+    // Hold the budget read open so status stays at 'loading'.
+    let releaseBudget!: () => void;
+    const slowBudgetDb = {
+      getFirstAsync: jest.fn(
+        () =>
+          new Promise<{ count: number } | null>((resolve) => {
+            releaseBudget = () => resolve({ count: 0 });
+          }),
+      ) as unknown as (sql: string, params: number[]) => Promise<{ count: number } | null>,
+    };
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+        budgetDb={slowBudgetDb}
+      />,
+    );
+
+    // Plants list resolves; meter does NOT appear because status is still 'loading'.
+    await waitFor(() => expect(screen.queryByTestId('plants-list-list')).toBeOnTheScreen());
+    expect(screen.queryByTestId('plants-list-budget-meter')).not.toBeOnTheScreen();
+    expect(screen.queryByText(/0\/50/)).not.toBeOnTheScreen();
+
+    // Once the read resolves, the meter renders.
+    await act(async () => {
+      releaseBudget();
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-budget-meter')).toBeOnTheScreen(),
+    );
+    expect(screen.getByTestId('plants-list-budget-meter')).toHaveTextContent('0/50 TODAY');
+  });
+
+  it('exposes a screen-reader-friendly accessibilityLabel ("N of 50 LLM calls today")', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant({ id: 'a' })]));
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+        budgetDb={makeInertBudgetDb(12)}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('12 of 50 LLM calls today')).toBeOnTheScreen(),
+    );
+  });
+
+  it('does NOT render the meter on the empty-garden surface (meter lives in the list header only)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([]));
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+        budgetDb={makeInertBudgetDb(3)}
+      />,
+    );
+
+    // The empty-garden surface owns its own header; the budget meter
+    // lives in the LIST header, which doesn't render on the empty path.
+    // This test pins that contract — the empty surface is the
+    // canonical "no list header" branch and the meter intentionally
+    // doesn't appear there in V1. (E11-005 ships the meter in the
+    // PlantsList header per the ticket spec; the empty-garden welcome
+    // is a separate primitive owned by E3-002.)
+    await waitFor(() => expect(screen.queryByTestId('plants-list-empty')).toBeOnTheScreen());
+    expect(screen.queryByTestId('plants-list-budget-meter')).not.toBeOnTheScreen();
   });
 });

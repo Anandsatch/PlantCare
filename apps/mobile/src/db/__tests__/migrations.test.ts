@@ -27,7 +27,7 @@ import {
   type Migration,
   type SqlExecutor,
 } from '../migrations';
-import { V1_INDEXES, V1_TABLES } from '../schema';
+import { SCHEMA_V1_SQL, V1_INDEXES, V1_TABLES, V2_INDEXES, V2_TABLES } from '../schema';
 
 void MIGRATIONS;
 
@@ -89,30 +89,30 @@ function getUserVersion(raw: DatabaseSync): number {
   return (raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
 }
 
-describe('runMigrations - V1 initial schema', () => {
-  it('creates all six tables on a fresh DB', async () => {
+describe('runMigrations - V1 + V2 schema', () => {
+  it('creates every table from both V1 and V2 on a fresh DB', async () => {
     const { adapter, raw } = freshDb();
     await runMigrations(adapter);
 
     const tables = listTables(raw);
-    expect(tables).toEqual([...V1_TABLES].sort());
+    expect(tables).toEqual([...V1_TABLES, ...V2_TABLES].sort());
   });
 
-  it('creates all six explicit indexes', async () => {
+  it('creates every explicit index from both V1 and V2', async () => {
     const { adapter, raw } = freshDb();
     await runMigrations(adapter);
 
     const indexes = listIndexes(raw);
-    expect(indexes).toEqual([...V1_INDEXES].sort());
+    expect(indexes).toEqual([...V1_INDEXES, ...V2_INDEXES].sort());
   });
 
-  it('advances user_version to the target', async () => {
+  it('advances user_version to the target (V2)', async () => {
     const { adapter, raw } = freshDb();
     expect(getUserVersion(raw)).toBe(0);
 
     await runMigrations(adapter);
     expect(getUserVersion(raw)).toBe(targetUserVersion());
-    expect(getUserVersion(raw)).toBe(1);
+    expect(getUserVersion(raw)).toBe(2);
   });
 
   it('is a no-op on a fully-migrated DB (re-open does not rerun)', async () => {
@@ -132,7 +132,7 @@ describe('runMigrations - V1 initial schema', () => {
 
     await runMigrations(wrapped);
     expect(calls).toBe(0);
-    expect(getUserVersion(raw)).toBe(1);
+    expect(getUserVersion(raw)).toBe(2);
   });
 });
 
@@ -396,6 +396,92 @@ describe('migration validation', () => {
     const { adapter } = freshDb();
     const bad: Migration[] = [{ version: 0, name: 'a', up: async () => undefined }];
     await expect(runMigrations(adapter, bad)).rejects.toThrow(/invalid version/);
+  });
+});
+
+describe('V2 — llm_calls table (E11-005 budget meter)', () => {
+  it('creates the llm_calls table with the expected columns', async () => {
+    const { adapter, raw } = freshDb();
+    await runMigrations(adapter);
+
+    const cols = raw.prepare("PRAGMA table_info('llm_calls')").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    expect(byName.get('id')).toMatchObject({ type: 'INTEGER', pk: 1 });
+    expect(byName.get('endpoint')).toMatchObject({ type: 'TEXT', notnull: 1 });
+    expect(byName.get('called_at_ms')).toMatchObject({ type: 'INTEGER', notnull: 1 });
+  });
+
+  it('declares id as AUTOINCREMENT (sqlite_sequence row materializes)', async () => {
+    const { adapter, raw } = freshDb();
+    await runMigrations(adapter);
+
+    raw
+      .prepare("INSERT INTO llm_calls (endpoint, called_at_ms) VALUES ('identify', 1000)")
+      .run();
+
+    // sqlite_sequence is the canonical AUTOINCREMENT marker; without
+    // AUTOINCREMENT, SQLite would use rowid and never populate this table.
+    const seq = raw
+      .prepare("SELECT name FROM sqlite_sequence WHERE name = 'llm_calls'")
+      .get() as { name: string } | undefined;
+    expect(seq?.name).toBe('llm_calls');
+  });
+
+  it('creates the idx_llm_calls_called_at index', async () => {
+    const { adapter, raw } = freshDb();
+    await runMigrations(adapter);
+
+    const indexes = listIndexes(raw);
+    expect(indexes).toContain('idx_llm_calls_called_at');
+  });
+
+  it('upgrades a V1-only DB to V2 without re-running V1', async () => {
+    const { adapter, raw } = freshDb();
+
+    // Simulate a V1-shipped device: run only the first migration.
+    const v1Only: Migration[] = [
+      {
+        version: 1,
+        name: 'v1',
+        up: async (db) => {
+          // Run V1's actual SCHEMA_V1_SQL via the public path so the FK
+          // contract stays honest.
+          await db.execAsync(SCHEMA_V1_SQL);
+        },
+      },
+    ];
+    await runMigrations(adapter, v1Only);
+    expect(getUserVersion(raw)).toBe(1);
+    expect(listTables(raw)).not.toContain('llm_calls');
+
+    // Now run the full migration list. V1 should not re-run; only V2 advances.
+    await runMigrations(adapter);
+    expect(getUserVersion(raw)).toBe(2);
+    expect(listTables(raw)).toContain('llm_calls');
+  });
+
+  it('is idempotent — re-running on a V2 DB is a no-op', async () => {
+    const { adapter, raw } = freshDb();
+    await runMigrations(adapter);
+    expect(getUserVersion(raw)).toBe(2);
+
+    // Insert a row, then re-run migrations. Idempotence means the row
+    // survives — V2's `up` did not recreate the table.
+    raw
+      .prepare("INSERT INTO llm_calls (endpoint, called_at_ms) VALUES ('diagnose', 5000)")
+      .run();
+
+    await runMigrations(adapter);
+    expect(getUserVersion(raw)).toBe(2);
+    const count = (
+      raw.prepare('SELECT COUNT(*) AS c FROM llm_calls').get() as { c: number }
+    ).c;
+    expect(count).toBe(1);
   });
 });
 

@@ -1,4 +1,4 @@
-import { SCHEMA_V1_SQL } from './schema';
+import { SCHEMA_V1_SQL, SCHEMA_V2_SQL } from './schema';
 
 /**
  * Minimal subset of `expo-sqlite`'s `SQLiteDatabase` that the migration runner
@@ -45,6 +45,16 @@ export const MIGRATIONS: Migration[] = [
     name: 'initial_schema',
     up: async (db) => {
       await db.execAsync(SCHEMA_V1_SQL);
+    },
+  },
+  {
+    // V2: client-side LLM daily-budget counter table (E11-005). Strictly
+    // additive — a fresh DB hits V1 then V2 in order; an upgraded DB
+    // already-at-V1 advances to V2 by running just this `up`.
+    version: 2,
+    name: 'llm_calls',
+    up: async (db) => {
+      await db.execAsync(SCHEMA_V2_SQL);
     },
   },
 ];

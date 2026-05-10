@@ -362,7 +362,7 @@ describe('migrations + notes table', () => {
     await expect(runMigrations(makeMigrationAdapter(raw))).resolves.toBeUndefined();
 
     const v = (raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    expect(v).toBe(1);
+    expect(v).toBe(2);
   });
 
   it('SCHEMA_V1_SQL creates a notes table with the expected NOT NULL columns', async () => {
