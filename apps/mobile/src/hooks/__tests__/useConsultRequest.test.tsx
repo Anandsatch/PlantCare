@@ -10,6 +10,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { ApiClient, ApiResult, ConsultResponse } from '../../api';
 import { useConsultRequest } from '../useConsultRequest';
 import type { NetInfoLike } from '../useDiagnoseRequest';
+import { freshQueueDb, readAllQueueRows } from './offlineQueueTestHelpers';
 
 const RECOMMENDATION: ConsultResponse = {
   kind: 'recommendation',
@@ -402,5 +403,186 @@ describe('useConsultRequest', () => {
     });
     expect(consultSpy).toHaveBeenCalledTimes(1);
     expect(result.current.status).toBe('success');
+  });
+
+  // ─── E7-004: real offline enqueue ────────────────────────────────────
+
+  describe('E7-004 offline enqueue', () => {
+    it('offline pre-flight: netInfo=false → no api call, sync_queue gets one row, hook returns queued', async () => {
+      const { client, consultSpy } = makeApiClient(async () => ({
+        ok: true,
+        data: RECOMMENDATION,
+      }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      let returned: ApiResult<ConsultResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.consult({
+          note: 'Leaves are yellowing',
+          plantContext: { species_slug: 'monstera_deliciosa' },
+        });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(consultSpy).not.toHaveBeenCalled();
+
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.endpoint).toBe('consult');
+      expect(rows[0]?.ref_table).toBe('consult');
+      expect(rows[0]?.status).toBe('pending');
+      const parsed = JSON.parse(rows[0]!.payload_json) as {
+        note: string;
+        plant_context: { species_slug: string };
+      };
+      expect(parsed.note).toBe('Leaves are yellowing');
+      expect(parsed.plant_context.species_slug).toBe('monstera_deliciosa');
+    });
+
+    it('online + apiClient returns kind:network → sync_queue gets one row, hook returns queued', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      let returned: ApiResult<ConsultResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.consult({ note: 'Help, my plant!' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.endpoint).toBe('consult');
+    });
+
+    it('online + apiClient returns ok → no sync_queue row', async () => {
+      const { client } = makeApiClient(async () => ({ ok: true, data: RECOMMENDATION }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.consult({ note: 'note' });
+      });
+
+      expect(result.current.status).toBe('success');
+      expect(readAllQueueRows(raw)).toHaveLength(0);
+    });
+
+    it.each([
+      ['timeout', { ok: false, kind: 'timeout' as const }],
+      ['server', { ok: false, kind: 'server' as const }],
+      ['parse_error', { ok: false, kind: 'parse_error' as const }],
+      ['low_confidence', { ok: false, kind: 'low_confidence' as const }],
+      ['layer1_reject', { ok: false, kind: 'layer1_reject' as const }],
+    ])(
+      'online + non-retryable kind=%s → NO sync_queue row',
+      async (_name, apiResult) => {
+        const { client } = makeApiClient(async () => apiResult as ApiResult<ConsultResponse>);
+        const { raw, q } = await freshQueueDb();
+
+        const { result } = renderHook(() =>
+          useConsultRequest({
+            apiClient: client,
+            netInfo: makeNetInfo(true),
+            offlineQueue: { db: q },
+          }),
+        );
+
+        await act(async () => {
+          await result.current.consult({ note: 'something' });
+        });
+
+        expect(readAllQueueRows(raw)).toHaveLength(0);
+      },
+    );
+
+    it('two consecutive identical requests fired before drain → ONE sync_queue row', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.consult({ note: 'same note' });
+        await result.current.consult({ note: 'same note' });
+      });
+
+      expect(readAllQueueRows(raw)).toHaveLength(1);
+    });
+
+    it('different plant contexts with same note text → TWO rows (different hash)', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.consult({
+          note: 'wilting',
+          plantContext: { species_slug: 'monstera' },
+        });
+        await result.current.consult({
+          note: 'wilting',
+          plantContext: { species_slug: 'pothos' },
+        });
+      });
+
+      expect(readAllQueueRows(raw)).toHaveLength(2);
+    });
+
+    it('without offlineQueue config, legacy behavior preserved', async () => {
+      const { client, consultSpy } = makeApiClient(async () => ({
+        ok: true,
+        data: RECOMMENDATION,
+      }));
+      const { result } = renderHook(() =>
+        useConsultRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+        }),
+      );
+
+      let returned: ApiResult<ConsultResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.consult({ note: 'Help' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(consultSpy).not.toHaveBeenCalled();
+    });
   });
 });

@@ -61,7 +61,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ApiClient, ApiResult, DiagnoseResponse } from '../api';
+import type { ApiClient, ApiResult, DiagnoseResponse, DiagnoseRequest } from '../api';
+import {
+  hashStable,
+  safeEnqueue,
+  type OfflineQueueConfig,
+} from './offlineEnqueue';
 import {
   recordLlmCall,
   shouldRecordLlmCallResult,
@@ -110,6 +115,18 @@ export type UseDiagnoseRequestConfig = {
    * client's `network` kind handles the actual offline detection today.
    */
   netInfo?: NetInfoLike;
+  /**
+   * Optional offline-queue wiring. When provided, the offline pre-flight
+   * branch and the post-call `network → queued` coercion BOTH persist to
+   * `sync_queue` (E7-001) so the SyncDrainer (E7-002) can replay on
+   * reconnect. When omitted, the hook keeps the legacy E5-006 behavior:
+   * `kind: 'queued'` is returned to the UI as a pure signal with no
+   * persistence — the tan banner renders, but the request is dropped.
+   *
+   * E7-004: real screens pass this; legacy callers (and most existing
+   * tests) leave it undefined for backward compatibility.
+   */
+  offlineQueue?: OfflineQueueConfig;
   /**
    * E11-006 insertion path. When provided, the hook calls
    * `recordLlmCall(budgetDb, 'diagnose')` AFTER any `ApiResult` whose
@@ -160,7 +177,7 @@ export type UseDiagnoseRequestReturn = {
 export function useDiagnoseRequest(
   config: UseDiagnoseRequestConfig,
 ): UseDiagnoseRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue, budgetDb } = config;
 
   const [status, setStatus] = useState<DiagnoseStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<DiagnoseResponse> | null>(
@@ -233,15 +250,39 @@ export function useDiagnoseRequest(
         setStatus('requesting');
       }
 
+      // Build the payload exactly once so pre-flight enqueue and
+      // online-path dispatch use the byte-identical body. The drainer
+      // JSON.parse's this on replay; keeping construction in one place
+      // means dedupe hashes across pre-flight and post-call collapse.
+      const requestBody: DiagnoseRequest = {
+        image: { uri: input.photoUri },
+      };
+      // Hash photoUri + plantContext so the same photo submitted for
+      // two different plants enqueues as two distinct rows (different
+      // plant intent → distinct user actions). The wire body today
+      // carries only `image`, but the dedupe identity reflects user
+      // intent, not the wire shape. The endpoint name is part of the
+      // dedupe identity at the CRUD layer (refTable), so cross-endpoint
+      // collisions are excluded structurally.
+      const inputHash = hashStable({
+        photoUri: input.photoUri,
+        plantContext: input.plantContext ?? null,
+      });
+
       const online = await netInfo.isConnected();
       if (!online) {
-        // TODO(E7-004): persist to sync_queue here instead of (or in
-        // addition to) returning the placeholder. Today this is a pure
-        // signal — the screen sees `queued` and renders the tan banner;
-        // there is no on-disk record of the queued diagnose. When E7
-        // lands, this branch should call into the SyncDrainer to enqueue
-        // the photo + context, and the returned result should carry a
-        // `queue_id` so the UI can correlate the eventual drain.
+        // E7-004: persist to sync_queue. Pre-flight short-circuit — we
+        // do NOT call apiClient.diagnose, because the radio reports the
+        // device is offline and a fetch would burn 20s on a doomed
+        // request. The drainer (E7-002) will pick this row up on the
+        // next online_active transition.
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'diagnose',
+            payload: requestBody,
+            inputHash,
+          });
+        }
         const queuedResult: ApiResult<DiagnoseResponse> = {
           ok: false,
           kind: 'queued',
@@ -252,9 +293,7 @@ export function useDiagnoseRequest(
 
       let result: ApiResult<DiagnoseResponse>;
       try {
-        result = await apiClient.diagnose({
-          image: { uri: input.photoUri },
-        });
+        result = await apiClient.diagnose(requestBody);
       } catch (err) {
         // Defensive: the api client's contract is "never throws, always
         // returns ApiResult." If a future change breaks that contract,
@@ -288,10 +327,24 @@ export function useDiagnoseRequest(
       // strictly better than the alternative (an error card the user
       // can't act on without changing networks).
       if (!result.ok && result.kind === 'network') {
-        // E11-006 insertion path: do NOT record. `network` means the
-        // fetch threw before reaching the provider; no quota was
-        // billed. The coercion to `queued` is a UX surface choice; it
-        // does NOT change the billable-vs-not classification.
+        // E11-006: do NOT call recordLlmCall here. `network` means the
+        // fetch threw before reaching the provider; no quota was billed.
+        // The coercion to `queued` is a UX surface choice; it does NOT
+        // change the billable-vs-not classification.
+        // E7-004: real enqueue on the post-call network path. This
+        // catches DNS/TLS/captive-portal failures that pre-flight could
+        // not detect (radio reported online, but the path beyond is
+        // broken). Dedupe via the same (endpoint, inputHash) tuple as
+        // the pre-flight branch — if the user double-taps and the first
+        // tap raced past pre-flight while the second tapped in offline,
+        // the two enqueues collapse to one row.
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'diagnose',
+            payload: requestBody,
+            inputHash,
+          });
+        }
         const coerced: ApiResult<DiagnoseResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
@@ -310,7 +363,7 @@ export function useDiagnoseRequest(
       }
       return result;
     },
-    [apiClient, netInfo],
+    [apiClient, netInfo, offlineQueue],
   );
 
   /**

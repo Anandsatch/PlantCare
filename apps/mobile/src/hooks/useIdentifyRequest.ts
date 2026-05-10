@@ -35,7 +35,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ApiClient, ApiResult, IdentifyResponse } from '../api';
+import type { ApiClient, ApiResult, IdentifyRequest, IdentifyResponse } from '../api';
+import {
+  hashStable,
+  safeEnqueue,
+  type OfflineQueueConfig,
+} from './offlineEnqueue';
 import {
   recordLlmCall,
   shouldRecordLlmCallResult,
@@ -53,6 +58,15 @@ const DEFAULT_NET_INFO: NetInfoLike = {
 export type UseIdentifyRequestConfig = {
   apiClient: ApiClient;
   netInfo?: NetInfoLike;
+  /**
+   * Optional offline-queue wiring (E7-004). When provided, the offline
+   * pre-flight branch and the post-call `network → queued` coercion
+   * BOTH persist to `sync_queue` so the SyncDrainer can replay on
+   * reconnect. When omitted, the hook keeps the legacy E5-006 behavior:
+   * `kind:'queued'` is returned to the UI as a pure signal with no
+   * persistence.
+   */
+  offlineQueue?: OfflineQueueConfig;
   /**
    * E11-006 insertion path. When provided, the hook calls
    * `recordLlmCall(budgetDb, 'identify')` AFTER any `ApiResult` whose
@@ -83,7 +97,7 @@ export type UseIdentifyRequestReturn = {
 export function useIdentifyRequest(
   config: UseIdentifyRequestConfig,
 ): UseIdentifyRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue, budgetDb } = config;
 
   const [status, setStatus] = useState<IdentifyStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<IdentifyResponse> | null>(
@@ -132,8 +146,27 @@ export function useIdentifyRequest(
         setStatus('requesting');
       }
 
+      // Build the request body once so pre-flight enqueue and online
+      // dispatch use byte-identical payloads. The drainer JSON.parse's
+      // this on replay; constructing in one place keeps dedupe and
+      // dispatch in lockstep.
+      const requestBody: IdentifyRequest = {
+        image: { uri: input.photoUri },
+      };
+      // Hash the photoUri only — same rationale as useDiagnoseRequest.
+      // Cross-endpoint collisions are excluded because the dedupe key's
+      // refTable carries the endpoint.
+      const inputHash = hashStable({ photoUri: input.photoUri });
+
       const online = await netInfo.isConnected();
       if (!online) {
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'identify',
+            payload: requestBody,
+            inputHash,
+          });
+        }
         const queuedResult: ApiResult<IdentifyResponse> = {
           ok: false,
           kind: 'queued',
@@ -144,9 +177,7 @@ export function useIdentifyRequest(
 
       let result: ApiResult<IdentifyResponse>;
       try {
-        result = await apiClient.identify({
-          image: { uri: input.photoUri },
-        });
+        result = await apiClient.identify(requestBody);
       } catch (err) {
         // Defensive: api client contract is "never throws." If a future
         // change breaks that, surface as `network` (which then coerces to
@@ -156,8 +187,19 @@ export function useIdentifyRequest(
       }
 
       if (!result.ok && result.kind === 'network') {
-        // E11-006: do NOT record. `network` means the fetch threw before
-        // reaching the provider; no quota was billed.
+        // E11-006: do NOT call recordLlmCall here. `network` means the
+        // fetch threw before reaching the provider; no quota was billed.
+        // E7-004: real persistence — enqueue post-call so the drainer
+        // replays once we reconnect. Same (endpoint, inputHash) tuple
+        // as pre-flight, so the CRUD layer dedupes a double-tap that
+        // raced past pre-flight.
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'identify',
+            payload: requestBody,
+            inputHash,
+          });
+        }
         const coerced: ApiResult<IdentifyResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
@@ -172,7 +214,7 @@ export function useIdentifyRequest(
       }
       return result;
     },
-    [apiClient, netInfo],
+    [apiClient, netInfo, offlineQueue],
   );
 
   function commitResult(

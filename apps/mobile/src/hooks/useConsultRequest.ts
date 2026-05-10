@@ -75,6 +75,11 @@ import type {
   ConsultResponse,
 } from '../api';
 import {
+  hashStable,
+  safeEnqueue,
+  type OfflineQueueConfig,
+} from './offlineEnqueue';
+import {
   recordLlmCall,
   shouldRecordLlmCallResult,
   type LlmCallWriter,
@@ -129,6 +134,15 @@ export type UseConsultRequestConfig = {
    */
   netInfo?: NetInfoLike;
   /**
+   * Optional offline-queue wiring (E7-004). When provided, the offline
+   * pre-flight branch and the post-call `network → queued` coercion
+   * BOTH persist to `sync_queue` so the SyncDrainer can replay on
+   * reconnect. When omitted, the hook keeps the legacy E5-006 behavior:
+   * `kind:'queued'` is returned to the UI as a pure signal with no
+   * persistence.
+   */
+  offlineQueue?: OfflineQueueConfig;
+  /**
    * E11-006 insertion path. When provided, the hook calls
    * `recordLlmCall(budgetDb, 'consult')` AFTER any `ApiResult` whose
    * kind consumed upstream LLM quota (`ok`, `low_confidence`,
@@ -155,7 +169,7 @@ export type UseConsultRequestReturn = {
 export function useConsultRequest(
   config: UseConsultRequestConfig,
 ): UseConsultRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO, budgetDb } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue, budgetDb } = config;
 
   const [status, setStatus] = useState<ConsultStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<ConsultResponse> | null>(
@@ -218,13 +232,35 @@ export function useConsultRequest(
         setStatus('requesting');
       }
 
+      // Build the wire body once so pre-flight enqueue and online-path
+      // dispatch use the byte-identical payload. The drainer JSON.parse's
+      // this on replay; constructing in one place keeps the dedupe hash
+      // and the dispatched body in lockstep.
+      //
+      // The api client's ConsultRequest is `ConsultRequestBody`. We
+      // forward `note` (trimmed) and `plant_context` if present, omitting
+      // it entirely when undefined so the wire body stays minimal — the
+      // backend's parser tolerates absence but not a key with `undefined`.
+      const body: ConsultRequest = input.plantContext
+        ? { note, plant_context: input.plantContext }
+        : { note };
+      // Hash the trimmed note + plantContext as a stable identity. Two
+      // taps with the same note (and same plant context) collapse to one
+      // sync_queue row. Different plants → different plantContext →
+      // different hash → not deduped (correct).
+      const inputHash = hashStable(body);
+
       const online = await netInfo.isConnected();
       if (!online) {
-        // TODO(E7-004): persist to sync_queue here. Today the queued path
-        // is a pure signal — the screen renders the tan banner; there is
-        // no on-disk record. When E7 lands, this branch enqueues the note
-        // + plantContext and returns a queue_id so the UI can correlate
-        // the eventual drain.
+        // E7-004: persist to sync_queue. Pre-flight short-circuit; do
+        // NOT call apiClient.consult since the radio is down.
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'consult',
+            payload: body,
+            inputHash,
+          });
+        }
         const queuedResult: ApiResult<ConsultResponse> = {
           ok: false,
           kind: 'queued',
@@ -235,14 +271,6 @@ export function useConsultRequest(
 
       let result: ApiResult<ConsultResponse>;
       try {
-        // The api client's ConsultRequest is `ConsultRequestBody`. The hook
-        // forwards `note` (trimmed) and `plantContext` if present, omitting
-        // plant_context entirely when undefined so the wire body stays
-        // minimal — the backend's parser tolerates absence but not a key
-        // with `undefined`.
-        const body: ConsultRequest = input.plantContext
-          ? { note, plant_context: input.plantContext }
-          : { note };
         result = await apiClient.consult(body);
       } catch (err) {
         // Defensive: api client contract is "never throws." If a future
@@ -253,9 +281,23 @@ export function useConsultRequest(
       }
 
       // Network → queued coercion. See module header.
+      // E7-004: real persistence — enqueue on the post-call network path
+      // so the drainer replays once we reconnect. The (endpoint,
+      // inputHash) tuple is the same as the pre-flight branch, so a
+      // double-tap that races past pre-flight collapses at the CRUD
+      // layer.
       if (!result.ok && result.kind === 'network') {
-        // E11-006: do NOT record. `network` means the fetch threw
-        // before reaching the provider; no quota was billed.
+        // E11-006: do NOT call recordLlmCall here. `network` means the
+        // fetch threw before reaching the provider; no quota was billed.
+        // E7-004: persist to sync_queue so the drainer replays once we
+        // reconnect.
+        if (offlineQueue) {
+          await safeEnqueue(offlineQueue, {
+            endpoint: 'consult',
+            payload: body,
+            inputHash,
+          });
+        }
         const coerced: ApiResult<ConsultResponse> = { ok: false, kind: 'queued' };
         commitResult(coerced, callId);
         return coerced;
@@ -270,7 +312,7 @@ export function useConsultRequest(
       }
       return result;
     },
-    [apiClient, netInfo],
+    [apiClient, netInfo, offlineQueue],
   );
 
   const reset = useCallback(() => {

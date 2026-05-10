@@ -9,6 +9,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../../api';
 import { useDiagnoseRequest, type NetInfoLike } from '../useDiagnoseRequest';
+import { freshQueueDb, readAllQueueRows } from './offlineQueueTestHelpers';
 
 // ─── Test helpers ───────────────────────────────────────────────────────
 
@@ -368,5 +369,225 @@ describe('useDiagnoseRequest', () => {
     // Defensive coercion: thrown error → network → queued.
     expect(returned).toEqual({ ok: false, kind: 'queued' });
     expect(result.current.status).toBe('queued');
+  });
+
+  // ─── E7-004: real offline enqueue ────────────────────────────────────
+  //
+  // The previous block tests the legacy "queued is a UI-only signal"
+  // contract — pass NO offlineQueue config and assert the hook still
+  // returns kind:'queued' on offline / network. Below, pass a real
+  // sync_queue executor and assert rows actually land in SQLite.
+
+  describe('E7-004 offline enqueue', () => {
+    it('offline pre-flight: netInfo=false → no api call, sync_queue gets one row, hook returns queued', async () => {
+      const { client, diagnoseSpy } = makeApiClient(async () => ({
+        ok: true,
+        data: SUCCESS_DATA,
+      }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+          offlineQueue: { db: q, nowMs: () => 1_700_000_000_000 },
+        }),
+      );
+
+      let returned: ApiResult<DiagnoseResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.diagnose({
+          photoUri: 'file:///documentDirectory/photo.jpg',
+        });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(diagnoseSpy).not.toHaveBeenCalled();
+
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.endpoint).toBe('diagnose');
+      expect(rows[0]?.ref_table).toBe('diagnose');
+      expect(rows[0]?.status).toBe('pending');
+      expect(rows[0]?.attempt_count).toBe(0);
+      // payload round-trips through JSON.parse without losing the photo URI
+      // (codex P1: drainer JSON.parse's this on replay).
+      const parsed = JSON.parse(rows[0]!.payload_json) as {
+        image: { uri: string };
+      };
+      expect(parsed.image.uri).toBe('file:///documentDirectory/photo.jpg');
+    });
+
+    it('online + apiClient returns kind:network → sync_queue gets one row, hook returns queued', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q, nowMs: () => 1_700_000_000_000 },
+        }),
+      );
+
+      let returned: ApiResult<DiagnoseResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.diagnose({ photoUri: 'file:///photo.jpg' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.endpoint).toBe('diagnose');
+      const parsed = JSON.parse(rows[0]!.payload_json) as {
+        image: { uri: string };
+      };
+      expect(parsed.image.uri).toBe('file:///photo.jpg');
+    });
+
+    it('online + apiClient returns ok → no sync_queue row, hook returns success', async () => {
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.diagnose({ photoUri: 'file:///photo.jpg' });
+      });
+
+      expect(result.current.status).toBe('success');
+      expect(readAllQueueRows(raw)).toHaveLength(0);
+    });
+
+    it.each([
+      ['timeout', { ok: false, kind: 'timeout' as const }],
+      ['server', { ok: false, kind: 'server' as const, retry_after: 30 }],
+      ['parse_error', { ok: false, kind: 'parse_error' as const }],
+      ['low_confidence', { ok: false, kind: 'low_confidence' as const }],
+      ['layer1_reject', { ok: false, kind: 'layer1_reject' as const }],
+    ])(
+      'online + non-retryable kind=%s → NO sync_queue row',
+      async (_name, apiResult) => {
+        const { client } = makeApiClient(async () => apiResult as ApiResult<DiagnoseResponse>);
+        const { raw, q } = await freshQueueDb();
+
+        const { result } = renderHook(() =>
+          useDiagnoseRequest({
+            apiClient: client,
+            netInfo: makeNetInfo(true),
+            offlineQueue: { db: q },
+          }),
+        );
+
+        await act(async () => {
+          await result.current.diagnose({ photoUri: 'file:///photo.jpg' });
+        });
+
+        expect(readAllQueueRows(raw)).toHaveLength(0);
+      },
+    );
+
+    it('two consecutive identical requests fired before drain → ONE sync_queue row (dedupe)', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      // Two sequential calls with the SAME photoUri — should dedupe via
+      // the (refTable='diagnose', refId=hash(photoUri)) tuple.
+      await act(async () => {
+        await result.current.diagnose({ photoUri: 'file:///same.jpg' });
+        await result.current.diagnose({ photoUri: 'file:///same.jpg' });
+      });
+
+      expect(readAllQueueRows(raw)).toHaveLength(1);
+    });
+
+    it('two consecutive DIFFERENT requests → TWO rows (different photoUri → different hash)', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(true),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.diagnose({ photoUri: 'file:///a.jpg' });
+        await result.current.diagnose({ photoUri: 'file:///b.jpg' });
+      });
+
+      const rows = readAllQueueRows(raw);
+      expect(rows).toHaveLength(2);
+      // Each row's payload references the right URI (no swap).
+      const uris = rows
+        .map((r) => (JSON.parse(r.payload_json) as { image: { uri: string } }).image.uri)
+        .sort();
+      expect(uris).toEqual(['file:///a.jpg', 'file:///b.jpg']);
+    });
+
+    it('StrictMode double-mount with same submit → ONE sync_queue row', async () => {
+      // React StrictMode in dev double-invokes effects; the request hook
+      // is not directly affected, but a real call site (a screen)
+      // submitting once must not produce two rows. We model the worst
+      // case: two diagnose() calls fired in rapid succession from a
+      // double-rendered effect, with an offline pre-flight.
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const { raw, q } = await freshQueueDb();
+
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+          offlineQueue: { db: q },
+        }),
+      );
+
+      await act(async () => {
+        // Same input, fired twice — same hash, dedupe to one row.
+        await Promise.all([
+          result.current.diagnose({ photoUri: 'file:///photo.jpg' }),
+          result.current.diagnose({ photoUri: 'file:///photo.jpg' }),
+        ]);
+      });
+
+      expect(readAllQueueRows(raw)).toHaveLength(1);
+    });
+
+    it('without offlineQueue config, legacy behavior preserved (no persistence; UI still gets queued)', async () => {
+      // Backwards-compat assertion: a caller that hasn't wired the
+      // queue still sees kind:'queued' on offline — same as pre-E7-004.
+      const { client } = makeApiClient(async () => ({ ok: true, data: SUCCESS_DATA }));
+      const { result } = renderHook(() =>
+        useDiagnoseRequest({
+          apiClient: client,
+          netInfo: makeNetInfo(false),
+          // offlineQueue intentionally omitted
+        }),
+      );
+
+      let returned: ApiResult<DiagnoseResponse> | undefined;
+      await act(async () => {
+        returned = await result.current.diagnose({ photoUri: 'file:///photo.jpg' });
+      });
+
+      expect(returned).toEqual({ ok: false, kind: 'queued' });
+      expect(result.current.status).toBe('queued');
+    });
   });
 });
