@@ -41,6 +41,11 @@ import {
   safeEnqueue,
   type OfflineQueueConfig,
 } from './offlineEnqueue';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 
 export type NetInfoLike = {
   isConnected: () => boolean | Promise<boolean>;
@@ -62,6 +67,13 @@ export type UseIdentifyRequestConfig = {
    * persistence.
    */
   offlineQueue?: OfflineQueueConfig;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'identify')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota. Same policy as `useDiagnoseRequest`.
+   * Optional — tests of the identify surface itself omit this.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type IdentifyInput = {
@@ -85,7 +97,7 @@ export type UseIdentifyRequestReturn = {
 export function useIdentifyRequest(
   config: UseIdentifyRequestConfig,
 ): UseIdentifyRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue, budgetDb } = config;
 
   const [status, setStatus] = useState<IdentifyStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<IdentifyResponse> | null>(
@@ -102,6 +114,29 @@ export function useIdentifyRequest(
 
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // E11-006 insertion path. Same pattern as useDiagnoseRequest.
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  async function recordIfBillable(result: ApiResult<IdentifyResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'identify');
+  }
 
   const identify = useCallback(
     async (input: IdentifyInput): Promise<ApiResult<IdentifyResponse>> => {
@@ -152,6 +187,8 @@ export function useIdentifyRequest(
       }
 
       if (!result.ok && result.kind === 'network') {
+        // E11-006: do NOT call recordLlmCall here. `network` means the
+        // fetch threw before reaching the provider; no quota was billed.
         // E7-004: real persistence — enqueue post-call so the drainer
         // replays once we reconnect. Same (endpoint, inputHash) tuple
         // as pre-flight, so the CRUD layer dedupes a double-tap that
@@ -168,7 +205,13 @@ export function useIdentifyRequest(
         return coerced;
       }
 
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits (codex E11-006 follow-up P2 — don't burn
+      // budget on stale-by-counter or post-unmount resolves).
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo, offlineQueue],
@@ -177,9 +220,9 @@ export function useIdentifyRequest(
   function commitResult(
     result: ApiResult<IdentifyResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -189,6 +232,7 @@ export function useIdentifyRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { identify, status, lastResult };

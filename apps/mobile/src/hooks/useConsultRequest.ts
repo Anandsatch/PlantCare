@@ -79,6 +79,11 @@ import {
   safeEnqueue,
   type OfflineQueueConfig,
 } from './offlineEnqueue';
+import {
+  recordLlmCall,
+  shouldRecordLlmCallResult,
+  type LlmCallWriter,
+} from '../lib/llmBudget';
 import type { NetInfoLike } from './useDiagnoseRequest';
 
 const DEFAULT_NET_INFO: NetInfoLike = {
@@ -137,6 +142,16 @@ export type UseConsultRequestConfig = {
    * persistence.
    */
   offlineQueue?: OfflineQueueConfig;
+  /**
+   * E11-006 insertion path. When provided, the hook calls
+   * `recordLlmCall(budgetDb, 'consult')` AFTER any `ApiResult` whose
+   * kind consumed upstream LLM quota (`ok`, `low_confidence`,
+   * `parse_error`, `server`, `layer1_reject`). DO NOT record on
+   * `'queued'` (call hasn't fired) or `'network'`/`'timeout'` (call
+   * never reached the provider). Optional — tests of the consult
+   * surface itself omit this and the hook is a no-op on the budget side.
+   */
+  budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
 };
 
 export type UseConsultRequestReturn = {
@@ -154,7 +169,7 @@ export type UseConsultRequestReturn = {
 export function useConsultRequest(
   config: UseConsultRequestConfig,
 ): UseConsultRequestReturn {
-  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue } = config;
+  const { apiClient, netInfo = DEFAULT_NET_INFO, offlineQueue, budgetDb } = config;
 
   const [status, setStatus] = useState<ConsultStatus>('idle');
   const [lastResult, setLastResult] = useState<ApiResult<ConsultResponse> | null>(
@@ -171,6 +186,31 @@ export function useConsultRequest(
 
   const callCounterRef = useRef(0);
   const lastCommittedCallIdRef = useRef(0);
+
+  // E11-006 insertion path. Same pattern as useDiagnoseRequest — see
+  // its module for the rationale (factory-vs-instance, swallow-on-error,
+  // best-effort policy).
+  const budgetDbRef = useRef(budgetDb);
+  useEffect(() => {
+    budgetDbRef.current = budgetDb;
+  }, [budgetDb]);
+
+  async function resolveBudgetDb(): Promise<LlmCallWriter | null> {
+    const current = budgetDbRef.current;
+    if (current === undefined) return null;
+    try {
+      return typeof current === 'function' ? await current() : current;
+    } catch {
+      return null;
+    }
+  }
+
+  async function recordIfBillable(result: ApiResult<ConsultResponse>): Promise<void> {
+    if (!shouldRecordLlmCallResult(result)) return;
+    const writer = await resolveBudgetDb();
+    if (!writer) return;
+    await recordLlmCall(writer, 'consult');
+  }
 
   const consult = useCallback(
     async (input: ConsultInput): Promise<ApiResult<ConsultResponse>> => {
@@ -247,6 +287,10 @@ export function useConsultRequest(
       // double-tap that races past pre-flight collapses at the CRUD
       // layer.
       if (!result.ok && result.kind === 'network') {
+        // E11-006: do NOT call recordLlmCall here. `network` means the
+        // fetch threw before reaching the provider; no quota was billed.
+        // E7-004: persist to sync_queue so the drainer replays once we
+        // reconnect.
         if (offlineQueue) {
           await safeEnqueue(offlineQueue, {
             endpoint: 'consult',
@@ -259,7 +303,13 @@ export function useConsultRequest(
         return coerced;
       }
 
-      commitResult(result, callId);
+      // E11-006 insertion path. Record ONLY when commitResult
+      // actually commits (codex E11-006 follow-up P2). Fire-and-
+      // forget; never throws into the consult chain.
+      const committed = commitResult(result, callId);
+      if (committed) {
+        void recordIfBillable(result);
+      }
       return result;
     },
     [apiClient, netInfo, offlineQueue],
@@ -277,9 +327,9 @@ export function useConsultRequest(
   function commitResult(
     result: ApiResult<ConsultResponse>,
     callId: number,
-  ): void {
-    if (!mountedRef.current) return;
-    if (callId < lastCommittedCallIdRef.current) return;
+  ): boolean {
+    if (!mountedRef.current) return false;
+    if (callId < lastCommittedCallIdRef.current) return false;
     lastCommittedCallIdRef.current = callId;
     setLastResult(result);
     if (result.ok) {
@@ -289,6 +339,7 @@ export function useConsultRequest(
     } else {
       setStatus('error');
     }
+    return true;
   }
 
   return { consult, status, lastResult, reset };
