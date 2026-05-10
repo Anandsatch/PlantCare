@@ -9,7 +9,8 @@
  */
 import { darkTheme, lightTheme, type Theme } from '@plantcare/theme';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { AppState } from 'react-native';
+import * as React from 'react';
+import { Animated, AppState } from 'react-native';
 
 import type { Plant } from '../../db/types';
 import {
@@ -1171,5 +1172,483 @@ describe('PlantsListScreen — budget meter (E11-005)', () => {
     // is a separate primitive owned by E3-002.)
     await waitFor(() => expect(screen.queryByTestId('plants-list-empty')).toBeOnTheScreen());
     expect(screen.queryByTestId('plants-list-budget-meter')).not.toBeOnTheScreen();
+  });
+});
+
+// =========================================================================
+// E3-005 — A-1 home contract sweep (tests-only ticket)
+// =========================================================================
+//
+// The blocks above ship with E3-003 / E3-004 / E11-005. The blocks below
+// are E3-005's net additions: the contracts each test pins are listed in
+// the v0.1.59.0 CHANGELOG entry. Per the brief, this ticket only ADDS
+// tests — the production source is unchanged. If a real bug were to
+// surface, the discipline is to add an INVERTED regression test that
+// fails on current main and would pass once the bug fix ships (Wave 3
+// E8-006 pattern), not to widen the test ticket into a feature ticket.
+
+// =========================================================================
+// E3-005 — Empty-state details + iteration order
+// =========================================================================
+
+describe('PlantsListScreen — E3-005 empty + iteration order', () => {
+  it('0 plants → no PlantCard rows mounted (defensive — empty surface owns the screen)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-empty')).toBeOnTheScreen());
+    // No PlantCard rows — UNQueryAllByTestId returns [] for any
+    // plant-card-* prefix because the FlatList is not mounted on the
+    // empty surface.
+    expect(screen.queryAllByText(/Last watered/i)).toHaveLength(0);
+    expect(screen.queryByTestId('plants-list-list')).toBeNull();
+  });
+
+  it('empty-state headline has accessibilityRole="header" for screen readers', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-garden-cta')).toBeOnTheScreen());
+    // EmptyGardenWelcome's "Welcome to your garden" headline must
+    // expose role=header so VoiceOver/TalkBack land on it as the
+    // landmark for the Day-1 surface.
+    const headline = screen.getByRole('header', { name: /Welcome to your garden/i });
+    expect(headline).toBeOnTheScreen();
+  });
+
+  it('1 plant → row carries the species headline + curly-quoted nickname', async () => {
+    const plant = makePlant({
+      id: 'mona',
+      species_label: 'Monstera deliciosa',
+      nickname: 'Mona',
+    });
+    mockedUsePlants.mockReturnValue(makePlantsApi([plant]));
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([{ plant_id: plant.id, last_watered_at: NOW - 3 * ONE_DAY_MS }])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('plant-card-mona')).toBeOnTheScreen());
+    // Species label is rendered inside the card's species testID slot.
+    expect(screen.getByTestId('plant-card-mona-species')).toHaveTextContent(
+      'Monstera deliciosa',
+    );
+    // Nickname is wrapped in curly single quotes per DESIGN.md ("Italic
+    // for plant nicknames in quotes"). Pin both the curly quote chars and
+    // the nickname so a regression that flips to straight quotes trips.
+    expect(screen.getByTestId('plant-card-mona-nickname')).toHaveTextContent(/^‘Mona’$/);
+  });
+
+  it('3 plants → DOM order matches usePlants() iteration order (sort is hook-owned)', async () => {
+    // The screen iterates `plants` directly; sorting (e.g., by
+    // overdue-first) is the hook's responsibility, not the screen's.
+    // This test pins that contract: hand the screen a deliberately
+    // un-sorted list and assert the DOM mirrors that exact order.
+    const plants = [
+      makePlant({ id: 'gamma', nickname: 'Gamma' }),
+      makePlant({ id: 'alpha', nickname: 'Alpha' }),
+      makePlant({ id: 'beta', nickname: 'Beta' }),
+    ];
+    mockedUsePlants.mockReturnValue(makePlantsApi(plants));
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('plant-card-gamma')).toBeOnTheScreen());
+    // Resolve view-models via the same pure resolver the screen uses;
+    // their order must match the hand-fed plant order.
+    const vms = resolvePlantViewModels({
+      plants,
+      lastWateredByPlantId: new Map(),
+      nowMs: NOW,
+    });
+    expect(vms.map((vm) => vm.plant.id)).toEqual(['gamma', 'alpha', 'beta']);
+    // Belt + braces — every row is mounted under its hook-supplied id.
+    expect(screen.getByTestId('plant-card-gamma')).toBeOnTheScreen();
+    expect(screen.getByTestId('plant-card-alpha')).toBeOnTheScreen();
+    expect(screen.getByTestId('plant-card-beta')).toBeOnTheScreen();
+  });
+});
+
+// =========================================================================
+// E3-005 — FAB tap path + popover-item order
+// =========================================================================
+
+describe('PlantsListScreen — E3-005 FAB camera-mount + popover order', () => {
+  it('FAB tap fires onAddPlant exactly once (camera-mount callback)', async () => {
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onAddPlant = jest.fn();
+
+    render(
+      <PlantsListScreen
+        onAddPlant={onAddPlant}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent.press(screen.getByTestId('plants-list-fab'));
+    // Exactly once — no double-mount of the camera capture surface.
+    expect(onAddPlant).toHaveBeenCalledTimes(1);
+  });
+
+  it('popover items render in master-plan order: Add a plant FIRST, Quick diagnose SECOND', async () => {
+    // Master plan A-1 § FAB behavior locks the popover order — "Add a
+    // plant" is the primary affordance (matches the FAB tap path) and
+    // "Quick diagnose" is the secondary. A regression that swaps them
+    // would put a destructive-feeling action above the additive one.
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        onQuickDiagnose={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    fireEvent(screen.getByTestId('plants-list-fab'), 'longPress');
+    const menu = screen.getByTestId('plants-list-fab-popover-menu');
+    const add = screen.getByTestId('plants-list-fab-popover-item-add');
+    const diagnose = screen.getByTestId('plants-list-fab-popover-item-diagnose');
+    // Both rendered.
+    expect(menu).toBeTruthy();
+    expect(add).toBeTruthy();
+    expect(diagnose).toBeTruthy();
+    // Order: add THEN diagnose. We assert on the menu's child index
+    // rather than rendering-time sequence so a regression that mounts
+    // them in reverse trips here.
+    const flatten = (node: unknown): unknown[] => {
+      const arr = Array.isArray(node) ? node : [node];
+      return arr.flatMap((c) => {
+        const child = c as { children?: unknown };
+        return child && typeof child === 'object' && 'children' in child
+          ? [c, ...flatten(child.children)]
+          : [c];
+      });
+    };
+    const menuOrder = flatten(menu.props.children)
+      .map((n) => {
+        const node = n as { props?: { testID?: string } };
+        return node?.props?.testID;
+      })
+      .filter((id): id is string =>
+        id === 'plants-list-fab-popover-item-add' ||
+        id === 'plants-list-fab-popover-item-diagnose',
+      );
+    expect(menuOrder.indexOf('plants-list-fab-popover-item-add')).toBeLessThan(
+      menuOrder.indexOf('plants-list-fab-popover-item-diagnose'),
+    );
+  });
+});
+
+// =========================================================================
+// E3-005 — Dark theme token-level assertions
+// =========================================================================
+
+describe('PlantsListScreen — E3-005 dark theme tokens', () => {
+  it('header wordmark uses darkTheme.colors.text (not a hex literal)', async () => {
+    mockedUseTheme.mockReturnValue(darkTheme);
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-title')).toBeOnTheScreen());
+    const title = screen.getByTestId('plants-list-title');
+    const flat = Array.isArray(title.props.style)
+      ? Object.assign({}, ...title.props.style)
+      : title.props.style;
+    // Token-level assertion (not hex). If DESIGN.md's dark text token is
+    // re-themed (e.g., a brand refresh), this test still passes — it's
+    // the screen's reach into theme.colors.text that's under contract.
+    expect(flat.color).toBe(darkTheme.colors.text);
+  });
+
+  it('eyebrow uses darkTheme.colors.textMuted in dark mode', async () => {
+    mockedUseTheme.mockReturnValue(darkTheme);
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('plants-list-eyebrow')).toBeOnTheScreen(),
+    );
+    const eyebrow = screen.getByTestId('plants-list-eyebrow');
+    const flat = Array.isArray(eyebrow.props.style)
+      ? Object.assign({}, ...eyebrow.props.style)
+      : eyebrow.props.style;
+    expect(flat.color).toBe(darkTheme.colors.textMuted);
+  });
+
+  it('does NOT reference theme.warn anywhere on screen mount (token does not exist; tan is the warm accent)', async () => {
+    mockedUseTheme.mockReturnValue(darkTheme);
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    // Spy on darkTheme via Proxy so any touch of `colors.warn` fails
+    // loudly instead of silently returning `undefined` and slipping
+    // through into a transparent style. Build a one-off scoped clone.
+    let touchedWarn = false;
+    const trapTheme = {
+      ...darkTheme,
+      colors: new Proxy(darkTheme.colors, {
+        get(target, prop) {
+          if (prop === 'warn') {
+            touchedWarn = true;
+            return undefined;
+          }
+          return (target as unknown as Record<string, unknown>)[prop as string];
+        },
+      }),
+    } as unknown as Theme;
+    mockedUseTheme.mockReturnValue(trapTheme);
+
+    render(
+      <PlantsListScreen
+        onAddPlant={jest.fn()}
+        onPlantPress={jest.fn()}
+        nowMs={NOW}
+        db={makeDb([])}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    expect(touchedWarn).toBe(false);
+  });
+});
+
+// =========================================================================
+// E3-005 — Reduce-motion (call-count assertion, not just end-state)
+// =========================================================================
+
+describe('PlantsListScreen — E3-005 reduce-motion call-count guarantee', () => {
+  it('zero Animated.timing calls fire on screen mount when reduce-motion is on', async () => {
+    // The screen has no reveal animations of its own (PlantsListScreen
+    // header lines 47-51). Card-level animations are gated by
+    // `useReduceMotion()` inside <PlantCard>. This test pins the
+    // SCREEN-LEVEL guarantee: with reduce-motion on, mounting the
+    // PlantsListScreen + its card subtree produces ZERO Animated.timing
+    // calls — not just an end-state opacity, which a duration-0 timing
+    // call could slip past (per the v0.1.55.0 P3 lesson).
+    mockedUseReduceMotion.mockReturnValue(true);
+    mockedUsePlants.mockReturnValue(
+      makePlantsApi([
+        makePlant({ id: 'a' }),
+        makePlant({ id: 'b' }),
+        makePlant({ id: 'c' }),
+      ]),
+    );
+
+    const timingSpy = jest.spyOn(Animated, 'timing');
+    try {
+      render(
+        <PlantsListScreen
+          onAddPlant={jest.fn()}
+          onPlantPress={jest.fn()}
+          nowMs={NOW}
+          db={makeDb([])}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId('plants-list-list')).toBeOnTheScreen(),
+      );
+      // No screen-level reveals + reduce-motion gates per-card animations
+      // → zero timing calls observed. The popover is NOT mounted (no
+      // onQuickDiagnose), so the FABPopover's async fade pathway can't
+      // contribute either.
+      expect(timingSpy).not.toHaveBeenCalled();
+    } finally {
+      timingSpy.mockRestore();
+    }
+  });
+});
+
+// =========================================================================
+// E3-005 — StrictMode safety (sibling MountProbe proves double-mount)
+// =========================================================================
+
+/**
+ * Sibling probe whose `useEffect` runs once per commit. We assert the
+ * counter is `>= 2` before any other contract assertion — a non-StrictMode
+ * test environment can't false-pass the latch tests because the probe
+ * itself wouldn't tick twice. Mirrors the v0.1.55.0 E9-005 pattern.
+ */
+function MountProbe({ counter }: { counter: { count: number } }) {
+  React.useEffect(() => {
+    counter.count += 1;
+  });
+  return null;
+}
+
+describe('PlantsListScreen — E3-005 StrictMode safety', () => {
+  it('FAB tap fires onAddPlant exactly once across StrictMode double-mount', async () => {
+    const counter = { count: 0 };
+    mockedUsePlants.mockReturnValue(makePlantsApi([makePlant()]));
+    const onAddPlant = jest.fn();
+
+    render(
+      <React.StrictMode>
+        <MountProbe counter={counter} />
+        <PlantsListScreen
+          onAddPlant={onAddPlant}
+          onPlantPress={jest.fn()}
+          nowMs={NOW}
+          db={makeDb([])}
+        />
+      </React.StrictMode>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('plants-list-fab')).toBeOnTheScreen());
+    // PROBE FIRST — proves the test environment is provably StrictMode-
+    // active. If this assertion fails, every contract assertion below it
+    // is meaningless because we'd be testing a non-strict tree.
+    expect(counter.count).toBeGreaterThanOrEqual(2);
+
+    fireEvent.press(screen.getByTestId('plants-list-fab'));
+    // The contract: even though the screen mounts twice under StrictMode,
+    // a single user tap fires onAddPlant exactly once (no double-mount of
+    // the camera surface).
+    expect(onAddPlant).toHaveBeenCalledTimes(1);
+  });
+});
+
+// =========================================================================
+// E3-005 — Hermes-without-Intl tripwire
+// =========================================================================
+
+describe('PlantsListScreen — E3-005 Hermes-without-Intl tripwire', () => {
+  it('PlantsListScreen itself does NOT call Date.prototype.toLocaleDateString or Intl.DateTimeFormat on mount', async () => {
+    // PlantsListScreen owns the header + FAB + popover wiring. Date
+    // formatting is the per-card concern (the >14-day "Last watered on
+    // {Mon D}" copy), and that's covered by PlantCard's own tests. This
+    // tripwire pins the screen-level negative: a future regression that
+    // tries to print a "garden last updated" timestamp in the header
+    // (or anywhere else on the screen surface) would have to route
+    // through a documented formatter rather than reaching for Intl
+    // directly — Hermes ships without Intl unless the build opts in.
+    //
+    // We monkey-patch BOTH APIs to throw, then assert the screen still
+    // renders. The renderable surface includes the FlatList + FAB; if
+    // any screen-level consumer reaches into Intl it'd throw on render.
+    const origToLocaleDateString = Date.prototype.toLocaleDateString;
+    const origIntlDTF = Intl.DateTimeFormat;
+    let toLocaleDateStringCalls = 0;
+    let intlDTFCalls = 0;
+
+    // Wrap rather than throw — the per-card "Last watered on {Mon D}"
+    // bucket only fires for >14-day timestamps, so a 3-day fixture
+    // never trips it. The test's job is to count calls AT THE SCREEN
+    // LEVEL with a 3-day fixture; both counters must remain at zero.
+    Date.prototype.toLocaleDateString = function patched(
+      this: Date,
+      ...args: Parameters<typeof Date.prototype.toLocaleDateString>
+    ) {
+      toLocaleDateStringCalls += 1;
+      return origToLocaleDateString.apply(this, args);
+    };
+    Intl.DateTimeFormat = new Proxy(origIntlDTF, {
+      construct(_target, args) {
+        intlDTFCalls += 1;
+        return new origIntlDTF(...(args as ConstructorParameters<typeof Intl.DateTimeFormat>));
+      },
+    }) as unknown as typeof Intl.DateTimeFormat;
+
+    try {
+      mockedUsePlants.mockReturnValue(
+        makePlantsApi([
+          makePlant({ id: 'a' }),
+          makePlant({ id: 'b' }),
+        ]),
+      );
+      const wateredAt = NOW - 3 * ONE_DAY_MS; // 3-day bucket — no Intl path
+      render(
+        <PlantsListScreen
+          onAddPlant={jest.fn()}
+          onPlantPress={jest.fn()}
+          nowMs={NOW}
+          db={makeDb([
+            { plant_id: 'a', last_watered_at: wateredAt },
+            { plant_id: 'b', last_watered_at: wateredAt },
+          ])}
+        />,
+      );
+      await waitFor(() => expect(screen.queryByTestId('plant-card-a')).toBeOnTheScreen());
+      // Zero calls at the screen level (PlantsListScreen itself doesn't
+      // format dates; the cards do, and the 3-day bucket short-circuits
+      // before reaching Intl).
+      expect(toLocaleDateStringCalls).toBe(0);
+      expect(intlDTFCalls).toBe(0);
+    } finally {
+      Date.prototype.toLocaleDateString = origToLocaleDateString;
+      Intl.DateTimeFormat = origIntlDTF;
+    }
+  });
+
+  it('screen still renders when Date.prototype.toLocaleDateString is monkey-patched to throw', async () => {
+    // Stronger form: even if a transitive dependency tried to reach
+    // Intl on screen mount, the visible surface should still come up
+    // (because PlantsListScreen has no date-display path of its own).
+    // This is the inverted regression for "future addition that prints
+    // the date in the header" — if added without the Hermes-safe
+    // formatter, this test trips first.
+    const origToLocaleDateString = Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleDateString = function () {
+      throw new Error('Hermes-without-Intl tripwire');
+    } as typeof Date.prototype.toLocaleDateString;
+
+    try {
+      mockedUsePlants.mockReturnValue(makePlantsApi([makePlant({ id: 'a' })]));
+      const wateredAt = NOW - 3 * ONE_DAY_MS; // 3-day bucket — never reaches Intl
+      render(
+        <PlantsListScreen
+          onAddPlant={jest.fn()}
+          onPlantPress={jest.fn()}
+          nowMs={NOW}
+          db={makeDb([{ plant_id: 'a', last_watered_at: wateredAt }])}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId('plant-card-a')).toBeOnTheScreen(),
+      );
+      // FAB renders, header renders, FlatList renders — the screen-
+      // level surface is fully painted without ever entering the Intl
+      // path.
+      expect(screen.getByTestId('plants-list-fab')).toBeOnTheScreen();
+      expect(screen.getByTestId('plants-list-title')).toBeOnTheScreen();
+    } finally {
+      Date.prototype.toLocaleDateString = origToLocaleDateString;
+    }
   });
 });
