@@ -121,6 +121,7 @@ import {
   useConsultRequest,
   type ConsultPlantContext,
 } from '../hooks/useConsultRequest';
+import type { LlmCallWriter } from '../lib/llmBudget';
 import type { ApiClient, ApiResult, ConsultResponse } from '../api';
 import {
   EditorialBottomSheet,
@@ -174,6 +175,32 @@ export type AddNoteSheetProps = {
    */
   readonly plantNickname?: string;
   readonly plantSpecies?: string;
+  /**
+   * E11-006 LLM-budget gate. When `disabled === true`, the Save & analyze
+   * CTA renders with the limit-reached label, the disabled flag is
+   * forced true regardless of input, and a tap is a no-op (defense-in-
+   * depth in case the rendered disabled state desyncs). The parent
+   * (PlantDetailRoute when E8-004 lands) is expected to read
+   * `useLlmBudgetGate()` and pass the resulting `disabled` here. The
+   * persistent <BudgetBanner> in the Plants list is the user-facing
+   * "why" — there is no second limit-reached surface inside the sheet.
+   *
+   * Optional: when omitted, the sheet behaves identically to the pre-
+   * E11-006 surface (back-compat for tests + E8-004's pre-flag-flip
+   * window). The wire-up arrives when E8-004 mounts the sheet from the
+   * route layer with the gate plumbed through.
+   */
+  readonly budgetGate?: { readonly disabled: boolean };
+  /**
+   * E11-006 insertion path. When the consult call resolves with
+   * `ok:true` (terminal-success), the hook fires
+   * `recordLlmCall(budgetDb, 'consult')` to advance the SQLite
+   * counter `useLlmBudget()` reads. Wired all the way through so
+   * the budget meter on the Plants list reflects consult successes.
+   * Optional — when omitted (older callers, isolated tests of the
+   * sheet itself) the hook is a no-op on the budget side.
+   */
+  readonly budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
   readonly accessibilityLabel?: string;
   readonly testID?: string;
 };
@@ -192,15 +219,24 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
     netInfo,
     plantNickname,
     plantSpecies,
+    budgetGate,
+    budgetDb,
     accessibilityLabel,
     testID,
   } = props;
+
+  // E11-006: when the daily LLM budget is exhausted, the Save & analyze
+  // CTA flips to a disabled limit-reached label. The persistent
+  // <BudgetBanner> in the Plants list is the explanatory surface; this
+  // sheet just refuses to fire consult().
+  const budgetDisabled = budgetGate?.disabled === true;
 
   const theme = useTheme();
   const reduceMotion = useReduceMotion();
   const { consult, status, lastResult, reset } = useConsultRequest({
     apiClient,
     ...(netInfo ? { netInfo } : {}),
+    ...(budgetDb ? { budgetDb } : {}),
   });
 
   const [note, setNote] = useState('');
@@ -234,9 +270,17 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
   }, [open, reset]);
 
   const trimmedNote = note.trim();
-  const canSubmit = trimmedNote.length > 0 && status !== 'requesting';
+  const canSubmit =
+    trimmedNote.length > 0 && status !== 'requesting' && !budgetDisabled;
 
   const handleSavePress = useCallback(async () => {
+    // E11-006 belt-and-braces: the rendered CTA is already disabled when
+    // budgetDisabled, but a programmatic press (or a brief render-window
+    // race after the gate flips) MUST not fire consult(). The
+    // useConsultRequest hook would happily call /api/consult — the gate
+    // lives here, at the user-intent boundary, not at the network
+    // boundary. Same pattern Identify/Diagnose's outer screens follow.
+    if (budgetDisabled) return;
     if (!canSubmit) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
@@ -276,7 +320,7 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
     // stay in the sheet for the user to retry, dismiss, or tap Done.
     // Status / lastResult already reflect them; the render switch handles
     // the UI.
-  }, [canSubmit, consult, onSave, plantContext, trimmedNote]);
+  }, [budgetDisabled, canSubmit, consult, onSave, plantContext, trimmedNote]);
 
   const handleDonePress = useCallback(() => {
     // Recommendation phase Done CTA. Read the success-data from lastResult
@@ -337,6 +381,12 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
             loading={phase === 'loading'}
             reduceMotion={reduceMotion}
             theme={theme}
+            // E11-006: when budget is exhausted, swap the CTA label and
+            // force the disabled flag true. The persistent
+            // <BudgetBanner> on the Plants list is the explanatory
+            // surface — there is no second limit-reached card inside
+            // the sheet.
+            budgetDisabled={budgetDisabled}
             testID={testID ?? 'add-note-sheet'}
           />
         ) : null}
@@ -498,6 +548,12 @@ function InputView(props: {
   loading: boolean;
   reduceMotion: boolean;
   theme: Theme;
+  /**
+   * E11-006: budget exhausted? Swap the Save CTA label, force-disable.
+   * The parent already folds this into `canSubmit`; this prop drives
+   * the cosmetic copy + accessibility-state change.
+   */
+  budgetDisabled: boolean;
   testID: string;
 }) {
   const {
@@ -509,8 +565,20 @@ function InputView(props: {
     loading,
     reduceMotion,
     theme,
+    budgetDisabled,
     testID,
   } = props;
+
+  // CTA copy resolution. When budgetDisabled is true the user-perceived
+  // affordance is "the analyze step is unavailable today" — surfacing
+  // that in the button itself (rather than in a tooltip the user can't
+  // discover) keeps the screen comprehensible without a second
+  // explanatory card. The ToastBanner in the Plants list is the
+  // authoritative "why."
+  const saveLabel = budgetDisabled ? 'Daily limit reached' : 'Save & analyze';
+  const saveAccessibilityLabel = budgetDisabled
+    ? 'Daily LLM limit reached. Save and analyze unavailable until midnight UTC.'
+    : 'Save note and analyze';
 
   return (
     <View>
@@ -582,12 +650,12 @@ function InputView(props: {
         <View style={styles.ctaSave}>
           <EditorialButton
             variant="filled"
-            label="Save & analyze"
+            label={saveLabel}
             onPress={onSavePress}
             disabled={!canSubmit}
             loading={loading}
             testID={`${testID}-save`}
-            accessibilityLabel="Save note and analyze"
+            accessibilityLabel={saveAccessibilityLabel}
           />
         </View>
       </View>
