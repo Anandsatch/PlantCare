@@ -294,7 +294,13 @@ export function ToastBanner(props: ToastBannerProps) {
           accessibilityRole="button"
           accessibilityLabel={action.label}
           accessibilityState={action.disabled ? { disabled: true } : undefined}
-          hitSlop={8}
+          // E11-002 (touch target audit): visual height is fontSize 12 +
+          // lineHeight ~16 + paddingV 4×2 = ~24, below the 44pt iOS HIG /
+          // Material a11y floor. Bumping hitSlop from 8 to 12 raises the
+          // effective hit area to ~48pt vertically, comfortably above the
+          // threshold. The banner row is its own row (no adjacent siblings
+          // within 24pt), so the larger slop cannot overlap another control.
+          hitSlop={12}
           style={styles.action}
         >
           <Text style={[styles.actionLabel, { color: ON_ACCENT_INK }]}>
@@ -307,7 +313,11 @@ export function ToastBanner(props: ToastBannerProps) {
           onPress={onRetry}
           accessibilityRole="button"
           accessibilityLabel="Retry"
-          hitSlop={8}
+          // E11-002: same 24-vertical / sub-44pt math as the `action` CTA
+          // above — both share `styles.action`. Bumping to 12 keeps the
+          // RETRY chip's effective hit area at ~48pt without resizing the
+          // visible glyph (DESIGN.md locks the compact ALL-CAPS label).
+          hitSlop={12}
           testID={testID ? `${testID}-retry` : undefined}
           style={styles.action}
         >
