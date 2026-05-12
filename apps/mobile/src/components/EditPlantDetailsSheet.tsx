@@ -374,7 +374,8 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: fonts.display.semibold,
     fontSize: 22,
-    lineHeight: 28,
+    // E11-003: 22 × 1.45 = 32 (was 28, ratio 1.27).
+    lineHeight: 32,
     marginBottom: 16,
   },
   row: {
@@ -391,12 +392,14 @@ const styles = StyleSheet.create({
   rowLabel: {
     fontFamily: fonts.body.medium,
     fontSize: 16,
-    lineHeight: 20,
+    // E11-003: 16 × 1.5 = 24 (was 20, ratio 1.25 — Inter clipped at 310%).
+    lineHeight: 24,
   },
   rowHint: {
     fontFamily: fonts.body.regular,
     fontSize: 13,
-    lineHeight: 18,
+    // E11-003: 13 × 1.54 = 20 (was 18, ratio 1.38 — just under threshold).
+    lineHeight: 20,
     marginTop: 4,
   },
   intervalRow: {
@@ -408,8 +411,13 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   stepBtn: {
-    width: 44,
-    height: 44,
+    // E11-003: minWidth/minHeight (was fixed 44/44) so the +/- glyph can
+    // flex with Dynamic Type. 44 is the touch-target floor from E11-002, so
+    // the button stays a11y-compliant when not scaled.
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
@@ -418,7 +426,9 @@ const styles = StyleSheet.create({
   stepGlyph: {
     fontFamily: fonts.display.regular,
     fontSize: 22,
-    lineHeight: 26,
+    // E11-003: 22 × 1.45 = 32 (was 26, ratio 1.18 — Fraunces "+"/"−" glyphs
+    // pinched against the button border at 310%).
+    lineHeight: 32,
   },
   stepPressed: {
     opacity: 0.7,
@@ -428,7 +438,11 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 44,
+    // E11-003: minHeight (was fixed height:44) so the 18-pt text can flex
+    // to 56pt+ at 310% Dynamic Type without clipping. paddingVertical
+    // preserves the visual rhythm at default scale.
+    minHeight: 44,
+    paddingVertical: 10,
     marginHorizontal: 12,
     borderRadius: 12,
     borderWidth: 1,
@@ -440,7 +454,8 @@ const styles = StyleSheet.create({
   validation: {
     fontFamily: fonts.body.regular,
     fontSize: 13,
-    lineHeight: 18,
+    // E11-003: 13 × 1.54 = 20 (was 18, ratio 1.38).
+    lineHeight: 20,
     marginTop: 8,
   },
   ctaRow: {
@@ -467,6 +482,8 @@ const styles = StyleSheet.create({
   ctaLabel: {
     fontFamily: fonts.display.semibold,
     fontSize: 16,
-    lineHeight: 20,
+    // E11-003: 16 × 1.5 = 24 (was 20, ratio 1.25 — Fraunces CTAs need
+    // headroom for the descenders in "Cancel" / "Save").
+    lineHeight: 24,
   },
 });

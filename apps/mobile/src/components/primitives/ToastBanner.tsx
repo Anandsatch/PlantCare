@@ -270,6 +270,10 @@ export function ToastBanner(props: ToastBannerProps) {
           // quadrant" being read aloud.
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
+          // E11-003: chrome glyph (decorative) opts out of Dynamic Type so
+          // it stays sized to the row's pulse animation footprint. The
+          // banner's flowing message text still scales normally.
+          allowFontScaling={false}
           testID={testID ? `${testID}-pending-glyph` : undefined}
           style={[styles.pendingGlyph, { color: ON_ACCENT_INK, opacity: pulseOpacity }]}
         >

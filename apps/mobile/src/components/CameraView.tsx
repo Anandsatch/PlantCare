@@ -300,7 +300,14 @@ export function PlantCareCameraView({
         ]}
         testID="camera-close-button"
       >
-        <Text style={[styles.closeGlyph, { color: theme.colors.text }]}>×</Text>
+        {/* E11-003: allowFontScaling={false} — the "×" is a chrome glyph in
+            a 36×36 circular button. Scaling it with Dynamic Type at 310%
+            would overflow the button's fixed-size frame (the borderRadius
+            depends on the fixed dimensions). a11yLabel on the parent
+            Pressable carries the semantics for screen readers. */}
+        <Text allowFontScaling={false} style={[styles.closeGlyph, { color: theme.colors.text }]}>
+          ×
+        </Text>
       </Pressable>
 
       {/* Mode toggle pill (centered). Two segments — active gets a tinted

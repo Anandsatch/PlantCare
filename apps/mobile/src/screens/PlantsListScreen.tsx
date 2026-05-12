@@ -379,7 +379,10 @@ export function PlantsListScreen({
           // for the editorial-paper feel.
           fontFamily: 'Fraunces_600SemiBold',
           fontSize: 32,
-          lineHeight: 38,
+          // E11-003: 32 × 1.40 = 45 → 44 (was 38, ratio 1.19 — Dynamic Type
+          // at 310% would clip the wordmark's "y" descender against the
+          // eyebrow below).
+          lineHeight: 44,
           color: theme.colors.text,
         },
         eyebrow: {
@@ -389,7 +392,8 @@ export function PlantsListScreen({
           // status labels" voice.
           fontFamily: 'Inter_500Medium',
           fontSize: 11,
-          lineHeight: 14,
+          // E11-003: 11 × 1.45 = 16 (was 14, ratio 1.27).
+          lineHeight: 16,
           letterSpacing: 1.4,
           color: theme.colors.textMuted,
           textTransform: 'uppercase',
@@ -404,7 +408,8 @@ export function PlantsListScreen({
           // rather than two distinct sections.
           fontFamily: 'Inter_500Medium',
           fontSize: 11,
-          lineHeight: 14,
+          // E11-003: 11 × 1.45 = 16 (was 14, ratio 1.27).
+          lineHeight: 16,
           letterSpacing: 1.4,
           color: theme.colors.textMuted,
           textTransform: 'uppercase',

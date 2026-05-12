@@ -341,7 +341,8 @@ function SundayLetterCardInner({
     title: {
       fontFamily: 'Fraunces_600SemiBold',
       fontSize: 22,
-      lineHeight: 28,
+      // E11-003: 22 × 1.45 = 32 (was 28, ratio 1.27).
+      lineHeight: 32,
       color: theme.colors.text,
       marginBottom: 8,
     },
@@ -369,7 +370,9 @@ function SundayLetterCardInner({
     openCtaLabel: {
       fontFamily: 'Fraunces_600SemiBold',
       fontSize: 15,
-      lineHeight: 20,
+      // E11-003: 15 × 1.47 = 22 (was 20, ratio 1.33 — Fraunces CTA needs
+      // descender room for "Open in PlantCare" at 310%).
+      lineHeight: 22,
       // Conservatory: filled forest CTA → cream label. Midnight: filled sage
       // CTA → forest label. theme.colors.surface satisfies both via the
       // approved DESIGN.md table (Light surface = cream; Dark surface = forest).

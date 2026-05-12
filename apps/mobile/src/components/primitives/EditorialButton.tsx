@@ -137,7 +137,9 @@ const styles = StyleSheet.create({
   label: {
     fontFamily: fonts.display.semibold,
     fontSize: 16,
-    lineHeight: 20,
+    // E11-003: 16 × 1.5 = 24 (was 20, ratio 1.25 — Fraunces CTA labels
+    // like "Get started" clipped the "g" descender at 310%).
+    lineHeight: 24,
     textAlign: 'center',
   },
   pressed: {

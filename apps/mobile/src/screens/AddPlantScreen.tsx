@@ -842,7 +842,8 @@ const styles = StyleSheet.create({
   },
   prompt: {
     fontSize: 24,
-    lineHeight: 30,
+    // E11-003: 24 × 1.42 = 34 (was 30, ratio 1.25).
+    lineHeight: 34,
     marginBottom: 12,
   },
   candidateCard: {
@@ -855,7 +856,8 @@ const styles = StyleSheet.create({
   },
   candidateLabel: {
     fontSize: 18,
-    lineHeight: 24,
+    // E11-003: 18 × 1.44 = 26 (was 24, ratio 1.33).
+    lineHeight: 26,
   },
   candidateConfidence: {
     fontSize: 11,
@@ -893,7 +895,8 @@ const styles = StyleSheet.create({
   },
   pickerLabel: {
     fontSize: 16,
-    lineHeight: 22,
+    // E11-003: 16 × 1.5 = 24 (was 22, ratio 1.375 — just under).
+    lineHeight: 24,
   },
   pickerEmpty: {
     paddingVertical: 16,

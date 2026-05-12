@@ -910,7 +910,8 @@ const styles = StyleSheet.create({
   headline: {
     fontFamily: fonts.display.semibold,
     fontSize: 22,
-    lineHeight: 28,
+    // E11-003: 22 × 1.45 = 32 (was 28, ratio 1.27).
+    lineHeight: 32,
     marginBottom: 16,
   },
   input: {
@@ -965,7 +966,8 @@ const styles = StyleSheet.create({
   cardHeadline: {
     fontFamily: fonts.display.semibold,
     fontSize: 18,
-    lineHeight: 24,
+    // E11-003: 18 × 1.45 = 26 (was 24, ratio 1.33).
+    lineHeight: 26,
     marginBottom: 8,
   },
   cardBody: {

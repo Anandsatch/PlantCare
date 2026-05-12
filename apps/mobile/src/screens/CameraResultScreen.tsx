@@ -1026,7 +1026,9 @@ const styles = StyleSheet.create({
   },
   headline: {
     fontSize: 32,
-    lineHeight: 36,
+    // E11-003: 32 × 1.40 = 45 → 44 (was 36, ratio 1.125 — Fraunces
+    // descenders clipped at 310%).
+    lineHeight: 44,
     marginBottom: 12,
   },
   narrative: {
@@ -1046,7 +1048,8 @@ const styles = StyleSheet.create({
   },
   errorHeadline: {
     fontSize: 28,
-    lineHeight: 32,
+    // E11-003: 28 × 1.43 = 40 (was 32, ratio 1.14).
+    lineHeight: 40,
     marginBottom: 12,
   },
   errorBody: {

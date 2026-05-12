@@ -398,7 +398,8 @@ const styles = StyleSheet.create({
   pageTitle: {
     fontFamily: fonts.display.semibold,
     fontSize: 28,
-    lineHeight: 34,
+    // E11-003: 28 × 1.43 = 40 (was 34, ratio 1.21).
+    lineHeight: 40,
     marginBottom: 4,
   },
   pageSubtitle: {
@@ -415,12 +416,14 @@ const styles = StyleSheet.create({
   sectionHeader: {
     fontFamily: fonts.display.semibold,
     fontSize: 20,
-    lineHeight: 24,
+    // E11-003: 20 × 1.4 = 28 (was 24, ratio 1.2).
+    lineHeight: 28,
   },
   sectionImport: {
     fontFamily: fonts.body.regular,
     fontSize: 12,
-    lineHeight: 16,
+    // E11-003: 12 × 1.5 = 18 (was 16, ratio 1.33).
+    lineHeight: 18,
     marginBottom: 12,
   },
   columns: {

@@ -365,7 +365,9 @@ const styles = StyleSheet.create({
   label: {
     fontFamily: 'Inter_500Medium',
     fontSize: 16,
-    lineHeight: 20,
+    // E11-003: 16 × 1.5 = 24 (was 20, ratio 1.25 — Inter popover labels
+    // like "Add a note" need descender room at 310% Dynamic Type).
+    lineHeight: 24,
   },
 });
 

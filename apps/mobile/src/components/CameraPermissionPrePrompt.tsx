@@ -228,7 +228,8 @@ const styles = StyleSheet.create({
   headline: {
     fontFamily: fonts.display.semibold,
     fontSize: 24,
-    lineHeight: 30,
+    // E11-003: 24 × 1.42 = 34 (was 30, ratio 1.25).
+    lineHeight: 34,
   },
   body: {
     fontFamily: fonts.body.regular,

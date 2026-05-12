@@ -74,6 +74,10 @@ export function EmptyGardenWelcome({ onAddFirst, testID }: EmptyGardenWelcomePro
         // human-meaningful label rather than "potted plant emoji".
         accessibilityLabel="Potted plant illustration"
         accessible
+        // E11-003: pin the decorative glyph at its design-time size. The
+        // flowing copy (headline/body/CTA) below still scales with the
+        // user's Dynamic Type preference up to 310%.
+        allowFontScaling={false}
         style={styles.illustration}
       >
         {'🪴'}
@@ -130,6 +134,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   illustration: {
+    // E11-003: the "🪴" emoji is a decorative chrome glyph. The Text node
+    // that renders it carries `allowFontScaling={false}` so it stays
+    // anchored at 64pt regardless of the user's Dynamic Type setting; the
+    // flowing headline/body/CTA copy below still scales normally.
     fontSize: 64,
     lineHeight: 72,
     marginBottom: 8,
@@ -141,7 +149,8 @@ const styles = StyleSheet.create({
     // the existing app/_layout.tsx font gate.
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 28,
-    lineHeight: 34,
+    // E11-003: 28 × 1.43 = 40 (was 34, ratio 1.21).
+    lineHeight: 40,
     textAlign: 'center',
     marginVertical: 16,
   },
@@ -163,7 +172,10 @@ const styles = StyleSheet.create({
   ctaLabel: {
     fontFamily: 'Fraunces_600SemiBold',
     fontSize: 16,
-    lineHeight: 16,
+    // E11-003: 16 × 1.375 = 22 (was 16, ratio 1.0 — Fraunces CTA had the
+    // line-height pinned to exactly the font size, which clipped the "g" in
+    // "Get started" at any scale above 100%).
+    lineHeight: 22,
     textAlign: 'center',
   },
 });

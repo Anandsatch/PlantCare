@@ -593,19 +593,24 @@ const styles = StyleSheet.create({
   species: {
     fontFamily: fonts.display.semibold,
     fontSize: 28,
-    lineHeight: 34,
+    // E11-003: 28 × 1.43 = 40 (was 34, ratio 1.21 — Fraunces descenders
+    // clipped at 310% Dynamic Type).
+    lineHeight: 40,
   },
   nickname: {
     fontFamily: fonts.display.italic,
     fontSize: 20,
-    lineHeight: 26,
+    // E11-003: 20 × 1.4 = 28 (was 26, ratio 1.3 — italic descenders need
+    // additional leading at scale).
+    lineHeight: 28,
     fontStyle: 'italic',
     marginTop: 2,
   },
   lastWatered: {
     fontFamily: fonts.body.regular,
     fontSize: 13,
-    lineHeight: 18,
+    // E11-003: 13 × 1.54 = 20 (was 18, ratio 1.38 — just under threshold).
+    lineHeight: 20,
     letterSpacing: 0.4,
     textTransform: 'uppercase',
     marginTop: 8,
