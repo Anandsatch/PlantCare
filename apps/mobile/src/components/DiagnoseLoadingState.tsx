@@ -1,6 +1,6 @@
 import { fonts } from '@plantcare/theme';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Animated, StyleSheet, Text, View } from 'react-native';
 
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
@@ -156,9 +156,20 @@ function PulseDots({ reduceMotion, color, testID }: PulseDotsProps): React.React
   // each dot's loop runs out of phase. Pin to refs so they survive re-renders
   // without restarting the loop (Animated.Value identity matters: starting a
   // new loop on every render would queue infinite animations).
-  const dot0 = useRef(new Animated.Value(reduceMotion ? STATIC_DOT_OPACITY : PULSE_MIN_OPACITY)).current;
-  const dot1 = useRef(new Animated.Value(reduceMotion ? STATIC_DOT_OPACITY : PULSE_MIN_OPACITY)).current;
-  const dot2 = useRef(new Animated.Value(reduceMotion ? STATIC_DOT_OPACITY : PULSE_MIN_OPACITY)).current;
+  //
+  // Init at STATIC_DOT_OPACITY UNCONDITIONALLY (E11-004 async-window fix).
+  // `useReduceMotion()` returns false synchronously during the boot window
+  // before AccessibilityInfo.isReduceMotionEnabled() resolves. Initializing
+  // at PULSE_MIN_OPACITY when the hook said false-by-default meant a reduce-
+  // motion user briefly saw dim dots before the loop started — AND the loop
+  // itself fired before the OS preference resolved. Init-at-end-state +
+  // async OS-probe inside the effect (mirrors FABPopover P1 pattern)
+  // guarantees zero Animated.* call AND zero visible drift in the boot
+  // window for reduce-motion users. Non-reduce-motion users see the
+  // pulse start ~one microtask later — negligible.
+  const dot0 = useRef(new Animated.Value(STATIC_DOT_OPACITY)).current;
+  const dot1 = useRef(new Animated.Value(STATIC_DOT_OPACITY)).current;
+  const dot2 = useRef(new Animated.Value(STATIC_DOT_OPACITY)).current;
 
   useEffect(() => {
     // Reduce-motion path: do not start an Animated.loop at all. The dots
@@ -175,32 +186,59 @@ function PulseDots({ reduceMotion, color, testID }: PulseDotsProps): React.React
       return;
     }
 
-    const makePulse = (value: Animated.Value, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(value, {
-            toValue: PULSE_MAX_OPACITY,
-            duration: PULSE_DURATION_MS,
-            useNativeDriver: true,
-          }),
-          Animated.timing(value, {
-            toValue: PULSE_MIN_OPACITY,
-            duration: PULSE_DURATION_MS,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
+    // Async-window guard (E11-004). Hook says motion allowed, but the OS
+    // probe might disagree during the boot window. We do NOT start the
+    // loop until the probe confirms motion is allowed. The dots stay at
+    // STATIC_DOT_OPACITY in the meantime — a visually neutral state for
+    // reduce-motion users while the probe resolves.
+    let cancelled = false;
+    let animations: Animated.CompositeAnimation[] | null = null;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((osSaysReduce) => {
+        if (cancelled) return;
+        if (osSaysReduce) {
+          // OS confirms reduce-motion. Keep dots at static; no loop.
+          return;
+        }
+        // OS confirms motion allowed. Drop the dots to PULSE_MIN_OPACITY
+        // (the loop's natural starting point) then start the staggered
+        // loop. Setting the start value inside the resolved branch means
+        // a reduce-motion user never sees the min-opacity dim frame.
+        dot0.setValue(PULSE_MIN_OPACITY);
+        dot1.setValue(PULSE_MIN_OPACITY);
+        dot2.setValue(PULSE_MIN_OPACITY);
 
-    const animations = [
-      makePulse(dot0, 0),
-      makePulse(dot1, PULSE_STAGGER_MS),
-      makePulse(dot2, PULSE_STAGGER_MS * 2),
-    ];
-    animations.forEach((a) => a.start());
+        const makePulse = (value: Animated.Value, delay: number) =>
+          Animated.loop(
+            Animated.sequence([
+              Animated.delay(delay),
+              Animated.timing(value, {
+                toValue: PULSE_MAX_OPACITY,
+                duration: PULSE_DURATION_MS,
+                useNativeDriver: true,
+              }),
+              Animated.timing(value, {
+                toValue: PULSE_MIN_OPACITY,
+                duration: PULSE_DURATION_MS,
+                useNativeDriver: true,
+              }),
+            ]),
+          );
+
+        animations = [
+          makePulse(dot0, 0),
+          makePulse(dot1, PULSE_STAGGER_MS),
+          makePulse(dot2, PULSE_STAGGER_MS * 2),
+        ];
+        animations.forEach((a) => a.start());
+      })
+      .catch(() => {
+        // Probe failed — biased toward no-motion. Dots stay static.
+      });
 
     return () => {
-      animations.forEach((a) => a.stop());
+      cancelled = true;
+      if (animations) animations.forEach((a) => a.stop());
     };
   }, [reduceMotion, dot0, dot1, dot2]);
 

@@ -1,6 +1,6 @@
 import { darkTheme, lightTheme } from '@plantcare/theme';
 import { act, fireEvent, render } from '@testing-library/react-native';
-import { Animated } from 'react-native';
+import { AccessibilityInfo, Animated } from 'react-native';
 
 import { ToastBanner } from '../ToastBanner';
 
@@ -386,11 +386,45 @@ describe('ToastBanner', () => {
       loopSpy.mockRestore();
     });
 
-    it('reduce-motion OFF: starts an Animated.loop for the pending pulse', () => {
+    it('reduce-motion OFF: starts an Animated.loop for the pending pulse', async () => {
       mockedUseReduceMotion.mockReturnValue(false);
+      // E11-004: loop start is now gated on the synchronous OS-probe.
+      // Mock the probe to resolve false so the loop fires after one
+      // microtask. Mirrors the FABPopover async-window pattern.
+      jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(false);
       const loopSpy = jest.spyOn(Animated, 'loop');
       render(<ToastBanner type="pending" message="m" testID="b" />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        // Drain the auto-dismiss timer that fakeTimers + the pending-only
+        // dismissMs path queues. Without this, the fake-timer queue holds
+        // a pending callback that the outer afterEach can't drain.
+        jest.advanceTimersByTime(0);
+      });
       expect(loopSpy).toHaveBeenCalledTimes(1);
+      loopSpy.mockRestore();
+    });
+
+    it('reduce-motion OFF but OS probe says reduce-motion ON: NO loop fires (boot-window race)', async () => {
+      // E11-004 boot-window race pin: hook says false (default during
+      // boot), OS probe resolves true. The previous code fired the loop
+      // immediately; the fix gates it on the probe result. This test
+      // confirms the probe gate.
+      mockedUseReduceMotion.mockReturnValue(false);
+      jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(true);
+      const loopSpy = jest.spyOn(Animated, 'loop');
+      render(<ToastBanner type="pending" message="m" testID="b" />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        jest.advanceTimersByTime(0);
+      });
+      expect(loopSpy).not.toHaveBeenCalled();
       loopSpy.mockRestore();
     });
 
@@ -447,7 +481,14 @@ describe('ToastBanner', () => {
       expect(getByTestId('b').props.accessibilityRole).toBe('status');
     });
 
-    it('strict-mode-style double mount does not double-start the loop (cleanup verified)', () => {
+    it('strict-mode-style double mount does not double-start the loop (cleanup verified)', async () => {
+      // E11-004: loop start is now gated on the synchronous OS-probe.
+      // Mock the probe to resolve false so the loop fires after one
+      // microtask on each mount.
+      mockedUseReduceMotion.mockReturnValue(false);
+      jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(false);
       const loopSpy = jest.spyOn(Animated, 'loop');
       const fakeLoop = { start: jest.fn(), stop: jest.fn() };
       // Force every Animated.loop() call to return the same fake controller
@@ -457,14 +498,24 @@ describe('ToastBanner', () => {
       const { unmount } = render(
         <ToastBanner type="pending" message="m" testID="b" />,
       );
+      // Flush the probe so the loop actually starts.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
       unmount();
       const { unmount: unmount2 } = render(
         <ToastBanner type="pending" message="m" testID="b" />,
       );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
       unmount2();
 
       // Each mount should start once and stop once on unmount — never a
-      // dangling start without a matching stop.
+      // dangling start without a matching stop. (After the unmount the
+      // cleanup function runs which calls loop.stop().)
       expect(fakeLoop.start.mock.calls.length).toBe(fakeLoop.stop.mock.calls.length);
       expect(fakeLoop.start.mock.calls.length).toBeGreaterThanOrEqual(2);
       loopSpy.mockRestore();
