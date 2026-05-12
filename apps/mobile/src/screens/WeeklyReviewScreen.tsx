@@ -472,7 +472,10 @@ export function WeeklyReviewScreen({
         accessibilityLabel={HERO_A11Y_LABEL}
         testID="weekly-review-hero"
       >
-        <Text style={styles.heroGlyph}>{HERO_GLYPH}</Text>
+        {/* E11-003: chrome glyph — declines Dynamic Type scaling so the
+            visual anchor stays at 72pt while the surrounding letter copy
+            flexes up to 310%. */}
+        <Text allowFontScaling={false} style={styles.heroGlyph}>{HERO_GLYPH}</Text>
       </View>
 
       {state.kind === 'loading' ? renderLoading(theme) : null}
@@ -753,7 +756,9 @@ const styles = StyleSheet.create({
   },
   headline: {
     fontSize: 28,
-    lineHeight: 34,
+    // E11-003: dynamic-type safe — 28 × 1.43 = 40 (was 34, ratio 1.21 clipped
+    // descenders at 310% Dynamic Type). Inter/Fraunces both flow safely now.
+    lineHeight: 40,
     marginBottom: 16,
     // No fontFamily — Fraunces wiring lands at the screen's parent (font
     // gate at app root via E0-005). Using `theme.colors.text` carries the
@@ -778,7 +783,8 @@ const styles = StyleSheet.create({
   },
   plantNickname: {
     fontSize: 18,
-    lineHeight: 24,
+    // E11-003: 18 × 1.45 = 26 (was 24, ratio 1.33 too tight for Inter scale-up).
+    lineHeight: 26,
     marginBottom: 2,
   },
   plantSpecies: {
@@ -800,7 +806,8 @@ const styles = StyleSheet.create({
   },
   bannerHeadline: {
     fontSize: 18,
-    lineHeight: 24,
+    // E11-003: 18 × 1.45 = 26 (was 24, ratio 1.33 too tight for Inter scale-up).
+    lineHeight: 26,
     marginBottom: 4,
   },
   bannerBody: {

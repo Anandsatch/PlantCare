@@ -320,20 +320,24 @@ export function PlantCard({
         species: {
           fontFamily: 'Fraunces_600SemiBold',
           fontSize: 18,
-          lineHeight: 22,
+          // E11-003: 18 × 1.44 = 26 (was 22, ratio 1.22 — Fraunces species
+          // names like "Calathea orbifolia" need descender room at 310%).
+          lineHeight: 26,
           color: theme.colors.text,
         },
         nickname: {
           fontFamily: 'Fraunces_400Regular_Italic',
           fontStyle: 'italic',
           fontSize: 14,
-          lineHeight: 18,
+          // E11-003: 14 × 1.43 = 20 (was 18, ratio 1.29 — italic descenders).
+          lineHeight: 20,
           color: theme.colors.text,
         },
         lastWatered: {
           fontFamily: 'Inter_400Regular',
           fontSize: 12,
-          lineHeight: 16,
+          // E11-003: 12 × 1.5 = 18 (was 16, ratio 1.33).
+          lineHeight: 18,
           color: theme.colors.textMuted,
           marginTop: 2,
         },
