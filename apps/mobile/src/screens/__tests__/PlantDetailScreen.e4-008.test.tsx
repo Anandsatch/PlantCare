@@ -612,25 +612,19 @@ describe('E4-008 — Hermes-without-Intl tripwire', () => {
     }
   });
 
-  // REGRESSION (inverted, filed via codex P2 review of E4-008):
-  // PlantDetailScreen.formatLastWatered at line 211 calls
-  // `new Date(lastWateredAtMs).toLocaleDateString(...)` without a
-  // try/catch for the 14+ day bucket. On Hermes without full Intl, that
-  // throws. The screen would crash for any plant last watered 14+ days
-  // ago. This test exercises the >14d branch with Intl monkey-patched
-  // to throw, and asserts the screen still mounts — currently FAILS
-  // because the production code has no fallback. Fix is a try/catch
-  // wrapping the toLocaleDateString call with a numeric fallback
-  // ("Last watered N days ago" up to a higher bound, or a date-string
-  // fallback like the WateringLedger's `formatWeekday` already does).
-  //
-  // Per the E4-008 brief: "If a real bug surfaces, file an INVERTED
-  // regression test (test fails until fix ships, comment with
-  // `// REGRESSION:`)." Marked with `test.failing` so the test harness
-  // tracks it as a known-failing assertion that flips green when the
-  // production fix lands.
-  test.failing(
-    'REGRESSION: screen mounts when Intl is broken and the most-recent event is 14+ days old (currently crashes — needs try/catch around toLocaleDateString)',
+  // Regression test originally filed via codex P2 review of E4-008 as an
+  // INVERTED `test.failing(...)`: `PlantDetailScreen.formatLastWatered`'s
+  // >14-day branch called `toLocaleDateString` without try/catch, crashing
+  // the screen on Hermes without full Intl. The production fix shipped in
+  // v0.1.68.0 (PR #69) — a local `formatMonthDay` helper wraps the call in
+  // try/catch with a `SHORT_MONTHS_FALLBACK` array, mirroring the existing
+  // pattern in `WateringLedger.formatWeekday`. With the fix in place, this
+  // test now PASSES: the screen mounts cleanly under monkey-patched
+  // throwing Intl. Flipped from `test.failing(...)` to `test(...)` per the
+  // PR #69 coordination note so a future regression that re-introduces the
+  // crash trips here loudly.
+  test(
+    'regression: screen mounts when Intl is broken and the most-recent event is 14+ days old (production fix in v0.1.68.0)',
     () => {
       const originalDateTimeFormat = Intl.DateTimeFormat;
       const originalToLocaleDateString = Date.prototype.toLocaleDateString;
