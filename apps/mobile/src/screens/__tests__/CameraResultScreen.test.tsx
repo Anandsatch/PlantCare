@@ -1347,7 +1347,10 @@ describe('CameraResultScreen', () => {
       );
       // Pending banner present.
       expect(screen.getByTestId('result-queued-banner')).toBeOnTheScreen();
-      expect(screen.getByText(/save when you're back online/i)).toBeOnTheScreen();
+      // No plantContext + no explicit entryMode → defaults to quick.
+      // v0.1.58.0 follow-up: Quick Diagnose surfaces diagnose-focused
+      // copy (no implication of pending plant persistence).
+      expect(screen.getByText(/diagnose queued/i)).toBeOnTheScreen();
       // No retry / save / report / retake CTAs.
       expect(screen.queryByTestId('result-try-again')).toBeNull();
       expect(screen.queryByTestId('result-retake')).toBeNull();
@@ -1777,6 +1780,197 @@ describe('CameraResultScreen', () => {
         fix_steps: [],
       });
       expect(text).toBe('');
+    });
+  });
+
+  // ─── entry-mode-aware queued copy (v0.1.58.0 follow-up) ────────────────
+  describe('entry-mode-aware queued copy', () => {
+    it('diagnose entry: queued banner reads "Diagnose queued — will run when online."', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          entryMode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      // ToastBanner renders the message prop as a Text child.
+      expect(screen.getByText(/diagnose queued/i)).toBeOnTheScreen();
+      // Reject the misleading plant-path copy.
+      expect(screen.queryByText(/save when you're back online/i)).toBeNull();
+    });
+
+    it('identify entry: queued banner reads "We\'ll save when you\'re back online."', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          entryMode="identify"
+          plantContext={{ species_slug: 'monstera', nickname: 'Steve' }}
+          plantNickname="Steve"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      expect(screen.getByText(/save when you're back online/i)).toBeOnTheScreen();
+      expect(screen.queryByText(/diagnose queued/i)).toBeNull();
+    });
+
+    it('default: inferred from plantContext presence (identify entry when context present)', async () => {
+      // No explicit entryMode prop; plantContext present → identify entry.
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          plantContext={{ species_slug: 'monstera', nickname: 'Steve' }}
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      expect(screen.getByText(/save when you're back online/i)).toBeOnTheScreen();
+    });
+
+    it('default: inferred diagnose entry when plantContext absent', async () => {
+      // No explicit entryMode prop, no plantContext → diagnose entry
+      // (the Quick Diagnose rescue case the follow-up fixes).
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'queued' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      expect(screen.getByText(/diagnose queued/i)).toBeOnTheScreen();
+    });
+
+    it('resolveErrorVariant: identify mode → "save when you\'re back online"', () => {
+      const v = __testing.resolveErrorVariant(
+        { kind: 'ready', compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 } },
+        { ok: false, kind: 'queued' },
+        'identify',
+      );
+      expect(v?.copy.headline).toMatch(/save when you're back online/i);
+    });
+
+    it('resolveErrorVariant: diagnose mode → "Diagnose queued"', () => {
+      const v = __testing.resolveErrorVariant(
+        { kind: 'ready', compressed: { uri: 'x', width: 1, height: 1, sizeBytes: 1 } },
+        { ok: false, kind: 'queued' },
+        'diagnose',
+      );
+      expect(v?.copy.headline).toMatch(/diagnose queued/i);
+    });
+  });
+
+  // ─── offlineQueue prop wiring (v0.1.61.0 follow-up) ────────────────────
+  describe('offlineQueue prop wiring', () => {
+    it('forwards offlineQueue to useDiagnoseRequest: post-call network enqueues', async () => {
+      // The api client returns `network`; useDiagnoseRequest coerces to
+      // `queued` and (when offlineQueue is wired) persists via safeEnqueue.
+      // We stub the QueueExecutor and assert the INSERT statement fires.
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const runAsync = jest.fn(
+        async (_sql: string, _params: unknown[]) => ({ lastInsertRowId: 1, changes: 1 }),
+      );
+      const getFirstAsync = jest.fn(
+        async <T,>(_sql: string, _params: unknown[]): Promise<T | null> => null,
+      );
+      const withExclusiveTransactionAsync = jest.fn(
+        async (fn: () => Promise<void>) => {
+          await fn();
+        },
+      );
+      const fakeDb = {
+        runAsync,
+        getFirstAsync,
+        getAllAsync: jest.fn(async () => []),
+        withExclusiveTransactionAsync,
+      };
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          offlineQueue={{ db: fakeDb as never }}
+          testID="result"
+        />,
+      );
+
+      // Wait for the queued banner to render — by that point the
+      // post-call enqueue has run synchronously inside the diagnose
+      // promise chain.
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      expect(withExclusiveTransactionAsync).toHaveBeenCalledTimes(1);
+      // Probe for live duplicate fired with the diagnose endpoint.
+      expect(getFirstAsync).toHaveBeenCalled();
+      const probeArgs = getFirstAsync.mock.calls[0];
+      expect((probeArgs?.[1] as unknown[])?.[0]).toBe('diagnose');
+      // Insert fired with the diagnose endpoint as the ref_table.
+      expect(runAsync).toHaveBeenCalled();
+      const insertArgs = runAsync.mock.calls[0];
+      expect(insertArgs?.[0]).toMatch(/INSERT INTO sync_queue/);
+      expect((insertArgs?.[1] as unknown[])?.[1]).toBe('diagnose');
+    });
+
+    it('omitting offlineQueue keeps legacy behavior: no persistence calls', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const { spy: compressSpy } = makeCompressImpl();
+      const runAsync = jest.fn();
+      const withExclusiveTransactionAsync = jest.fn();
+      // No db passed.
+
+      render(
+        <CameraResultScreen
+          photoUri="file:///raw.jpg"
+          mode="diagnose"
+          apiClient={client}
+          onSave={jest.fn()}
+          compressPhotoImpl={compressSpy}
+          testID="result"
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('result-error-queued')).toBeOnTheScreen(),
+      );
+      expect(runAsync).not.toHaveBeenCalled();
+      expect(withExclusiveTransactionAsync).not.toHaveBeenCalled();
     });
   });
 });

@@ -158,6 +158,7 @@ import {
 import type { ApiClient, ApiResult, DiagnoseResponse } from '../api';
 import { DiagnoseLoadingState } from '../components/DiagnoseLoadingState';
 import { EditorialButton, HeroPhoto, ToastBanner } from '../components/primitives';
+import type { OfflineQueueConfig } from '../hooks/offlineEnqueue';
 import { useDiagnoseRequest, type PlantContext } from '../hooks/useDiagnoseRequest';
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
@@ -287,6 +288,44 @@ export type CameraResultScreenProps = {
    */
   budgetDb?: import('../lib/llmBudget').LlmCallWriter
     | (() => Promise<import('../lib/llmBudget').LlmCallWriter>);
+  /**
+   * E7-004 follow-up (v0.1.61.0 CHANGELOG). Forwarded to
+   * `useDiagnoseRequest` so the offline pre-flight branch AND the
+   * post-call `network → queued` coercion persist to `sync_queue`
+   * (E7-001), where the SyncDrainer (E7-002) replays on reconnect.
+   * Optional — when omitted, the hook keeps the legacy E5-006 behavior:
+   * the tan queued banner renders but no row is persisted. Production
+   * wires this from the route layer; tests pass a stub QueueExecutor.
+   */
+  offlineQueue?: OfflineQueueConfig;
+  /**
+   * Entry-mode-aware queued copy (v0.1.58.0 follow-up). Mirrors the
+   * `entryMode: CameraMode` value `<GardenHomeScreen>` already tracks
+   * across the camera flow:
+   *
+   *   - `'identify'` — the FAB → camera path, destined for
+   *     `<AddPlantScreen>` and a plant-row INSERT. Queued banner reads
+   *     "We'll save when you're back online" because the parent IS
+   *     persisting (E5-011 wiring); the LLM result is the pending part.
+   *   - `'diagnose'` — the FAB long-press → Quick Diagnose path. Photos
+   *     land in `documentDirectory/plants/unattached/` and never get a
+   *     plant row. The queued banner therefore reads "Diagnose queued —
+   *     will run when online" instead of the misleading "save" copy.
+   *
+   * Distinct from the screen's `mode` prop. `mode` is the wire-level
+   * capture mode (`identify` vs `diagnose` route on `/api/diagnose`);
+   * `entryMode` is the user-intent context that drives the copy. They
+   * usually align (`mode='diagnose'` from Quick Diagnose entry), but
+   * the in-camera mode-toggle pill can flip `mode` mid-capture without
+   * changing the user's persistence intent — see GardenHomeScreen's
+   * "ALL persistence/telemetry forwarding gates on entryMode, NOT on
+   * payload.mode" lock.
+   *
+   * Optional — when omitted, the screen infers from `plantContext`:
+   * presence → `'identify'`, absence → `'diagnose'`. Tests + production
+   * route layer should pass explicitly.
+   */
+  entryMode?: 'identify' | 'diagnose';
   testID?: string;
 };
 
@@ -335,6 +374,7 @@ type ErrorVariant = {
 function resolveErrorVariant(
   phase: ScreenPhase,
   lastResult: ApiResult<DiagnoseResponse> | null,
+  entryMode: 'identify' | 'diagnose' = 'identify',
 ): ErrorVariant | null {
   if (phase.kind === 'compress-failed') {
     return {
@@ -406,13 +446,30 @@ function resolveErrorVariant(
         message: lastResult.message,
       };
     case 'queued':
-      return {
-        kind: 'queued',
-        copy: {
-          headline: "We'll save when you're back online.",
-          body: 'Your photo is queued. We will diagnose it the next time you have a connection.',
-        },
-      };
+      // Entry-mode-aware copy (v0.1.58.0 follow-up). The Quick Diagnose
+      // rescue path (`entryMode === 'diagnose'`) doesn't persist
+      // anything to a plant row, so "We'll save when you're back
+      // online" misleads — Quick Diagnose has no plant to save to.
+      // Surface a diagnose-focused headline instead. The identify
+      // entry-point path keeps the original copy: the parent (E5-011
+      // wiring) is expected to persist a pending row against the
+      // plant, so "save when you're back online" is honest there.
+      return entryMode === 'diagnose'
+        ? {
+            kind: 'queued',
+            copy: {
+              headline: 'Diagnose queued — will run when online.',
+              body:
+                "We'll run the diagnose the next time you have a connection. Your photo stays on this device until then.",
+            },
+          }
+        : {
+            kind: 'queued',
+            copy: {
+              headline: "We'll save when you're back online.",
+              body: 'Your photo is queued. We will diagnose it the next time you have a connection.',
+            },
+          };
     default: {
       // Exhaustiveness: TypeScript flags any new kind that isn't handled.
       const _exhaustive: never = lastResult.kind;
@@ -437,14 +494,25 @@ export function CameraResultScreen({
   compressPhotoImpl = defaultCompressPhoto,
   announceForAccessibilityImpl,
   budgetDb,
+  offlineQueue,
+  entryMode,
   testID,
 }: CameraResultScreenProps): ReactElement {
   const theme = useTheme();
   const reduceMotion = useReduceMotion();
 
+  // Default entryMode from plantContext presence. Explicit prop wins.
+  // A deep-link path that mounts the screen with a synthetic plant
+  // context but no actual plant-attached intent can override this.
+  // Production callers (GardenHomeScreen) pass `entryMode` explicitly
+  // because the parent already tracks it in its view-state machine.
+  const resolvedEntryMode: 'identify' | 'diagnose' =
+    entryMode ?? (plantContext ? 'identify' : 'diagnose');
+
   const { diagnose, status, lastResult } = useDiagnoseRequest({
     apiClient,
     ...(budgetDb ? { budgetDb } : {}),
+    ...(offlineQueue ? { offlineQueue } : {}),
   });
 
   // Compression phase. Fires once on mount; the result is held for the lifetime
@@ -669,7 +737,7 @@ export function CameraResultScreen({
     announceForAccessibilityImpl ?? AccessibilityInfo.announceForAccessibility;
   const lastAnnouncedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    const variant = resolveErrorVariant(phase, lastResult);
+    const variant = resolveErrorVariant(phase, lastResult, resolvedEntryMode);
     if (!variant) {
       lastAnnouncedKeyRef.current = null;
       return;
@@ -681,7 +749,7 @@ export function CameraResultScreen({
     } catch {
       // AccessibilityInfo throws are non-fatal; ignore.
     }
-  }, [phase, lastResult, announceImpl]);
+  }, [phase, lastResult, announceImpl, resolvedEntryMode]);
 
   // ─── Render ───────────────────────────────────────────────────────────
 
@@ -785,7 +853,7 @@ export function CameraResultScreen({
           is the only visible surface — the previous error result is still on
           the hook, but we don't render it until the retry resolves. */}
       {isErrorVariantVisible && (() => {
-        const variant = resolveErrorVariant(phase, lastResult);
+        const variant = resolveErrorVariant(phase, lastResult, resolvedEntryMode);
         if (!variant) return null;
         return (
           <Animated.View

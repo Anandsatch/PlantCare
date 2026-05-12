@@ -81,6 +81,7 @@ import type { ApiClient, ApiResult, IdentifyResponse } from '../api';
 import { DiagnoseLoadingState } from '../components/DiagnoseLoadingState';
 import { HeroPhoto } from '../components/primitives';
 import { EditorialButton } from '../components/primitives/EditorialButton';
+import type { OfflineQueueConfig } from '../hooks/offlineEnqueue';
 import { useIdentifyRequest, type NetInfoLike } from '../hooks/useIdentifyRequest';
 import { useTheme } from '../hooks/useTheme';
 import { compressPhoto, type CompressPhotoResult } from '../photos';
@@ -178,6 +179,16 @@ export type AddPlantScreenProps = {
    */
   readonly budgetDb?: import('../lib/llmBudget').LlmCallWriter
     | (() => Promise<import('../lib/llmBudget').LlmCallWriter>);
+  /**
+   * E7-004 follow-up (v0.1.61.0 CHANGELOG). Forwarded to
+   * `useIdentifyRequest` so the offline pre-flight branch AND the
+   * post-call `network → queued` coercion persist to `sync_queue`
+   * (E7-001) for SyncDrainer replay. Optional — when omitted, the
+   * hook keeps the legacy E5-006 behavior: the queued banner renders
+   * but no row is persisted. Production wires this from the route
+   * layer; tests pass a stub QueueExecutor.
+   */
+  readonly offlineQueue?: OfflineQueueConfig;
   readonly testID?: string;
 };
 
@@ -239,6 +250,7 @@ export function AddPlantScreen({
   onCancel,
   skipCompress,
   budgetDb,
+  offlineQueue,
   testID,
 }: AddPlantScreenProps): ReactElement {
   const theme = useTheme();
@@ -246,6 +258,7 @@ export function AddPlantScreen({
     apiClient,
     netInfo,
     ...(budgetDb ? { budgetDb } : {}),
+    ...(offlineQueue ? { offlineQueue } : {}),
   });
 
   const [phase, setPhase] = useState<Phase>(skipCompress ? 'identifying' : 'compressing');

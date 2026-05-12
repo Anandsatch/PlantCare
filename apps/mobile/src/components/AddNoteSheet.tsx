@@ -115,6 +115,7 @@ import {
   View,
 } from 'react-native';
 
+import type { OfflineQueueConfig } from '../hooks/offlineEnqueue';
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
 import {
@@ -201,6 +202,16 @@ export type AddNoteSheetProps = {
    * sheet itself) the hook is a no-op on the budget side.
    */
   readonly budgetDb?: LlmCallWriter | (() => Promise<LlmCallWriter>);
+  /**
+   * E7-004 follow-up (v0.1.61.0 CHANGELOG). Forwarded to
+   * `useConsultRequest` so the offline pre-flight branch AND the
+   * post-call `network → queued` coercion persist to `sync_queue`
+   * (E7-001) for SyncDrainer replay. Optional — when omitted, the
+   * hook keeps the legacy E5-006 behavior: the queued banner renders
+   * but no row is persisted. Production wires this from
+   * PlantDetailRoute; tests pass a stub QueueExecutor.
+   */
+  readonly offlineQueue?: OfflineQueueConfig;
   readonly accessibilityLabel?: string;
   readonly testID?: string;
 };
@@ -221,6 +232,7 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
     plantSpecies,
     budgetGate,
     budgetDb,
+    offlineQueue,
     accessibilityLabel,
     testID,
   } = props;
@@ -237,6 +249,7 @@ export function AddNoteSheet(props: AddNoteSheetProps) {
     apiClient,
     ...(netInfo ? { netInfo } : {}),
     ...(budgetDb ? { budgetDb } : {}),
+    ...(offlineQueue ? { offlineQueue } : {}),
   });
 
   const [note, setNote] = useState('');

@@ -720,6 +720,84 @@ describe('AddPlantScreen', () => {
     // identify was never called because compression failed first.
     expect(identifySpy).not.toHaveBeenCalled();
   });
+
+  // ─── offlineQueue prop wiring (v0.1.61.0 follow-up) ────────────────────
+  describe('offlineQueue prop wiring', () => {
+    it('forwards offlineQueue to useIdentifyRequest: network coercion enqueues', async () => {
+      // api-client returns `network` → useIdentifyRequest coerces to `queued`
+      // and (when offlineQueue is wired) persists via safeEnqueue.
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const runAsync = jest.fn(
+        async (_sql: string, _params: unknown[]) => ({ lastInsertRowId: 1, changes: 1 }),
+      );
+      const getFirstAsync = jest.fn(
+        async <T,>(_sql: string, _params: unknown[]): Promise<T | null> => null,
+      );
+      const withExclusiveTransactionAsync = jest.fn(
+        async (fn: () => Promise<void>) => {
+          await fn();
+        },
+      );
+      const fakeDb = {
+        runAsync,
+        getFirstAsync,
+        getAllAsync: jest.fn(async () => []),
+        withExclusiveTransactionAsync,
+      };
+
+      render(
+        <AddPlantScreen
+          photoUri="file:///raw.jpg"
+          apiClient={client}
+          onSave={onSaveMock()}
+          skipCompress
+          offlineQueue={{ db: fakeDb as never }}
+          testID="add"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(withExclusiveTransactionAsync).toHaveBeenCalledTimes(1);
+      });
+      // Verify the enqueue used the `identify` endpoint as the ref_table.
+      const probeArgs = getFirstAsync.mock.calls[0];
+      expect((probeArgs?.[1] as unknown[])?.[0]).toBe('identify');
+      expect(runAsync).toHaveBeenCalled();
+      const insertArgs = runAsync.mock.calls[0];
+      expect(insertArgs?.[0]).toMatch(/INSERT INTO sync_queue/);
+      expect((insertArgs?.[1] as unknown[])?.[1]).toBe('identify');
+    });
+
+    it('omitting offlineQueue keeps legacy behavior: no persistence calls', async () => {
+      const { client } = makeApiClient(async () => ({ ok: false, kind: 'network' }));
+      const runAsync = jest.fn();
+      const withExclusiveTransactionAsync = jest.fn();
+
+      render(
+        <AddPlantScreen
+          photoUri="file:///raw.jpg"
+          apiClient={client}
+          onSave={onSaveMock()}
+          skipCompress
+          testID="add"
+        />,
+      );
+
+      // Wait for identify to settle; the queued surface should render
+      // without any DB calls because no offlineQueue was wired.
+      await waitFor(() => {
+        // Allow a microtask flush for the identify chain.
+        expect(client.identify).toHaveBeenCalled();
+      });
+      // A short delay for the post-call coercion path to complete.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(runAsync).not.toHaveBeenCalled();
+      expect(withExclusiveTransactionAsync).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('toAddPlantResult', () => {
