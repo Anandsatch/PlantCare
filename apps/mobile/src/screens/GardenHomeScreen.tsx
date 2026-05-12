@@ -476,6 +476,13 @@ export function GardenHomeScreen({
           apiClient={apiClient}
           photoUri={view.photoUri}
           mode={view.captureMode}
+          // v0.1.58.0 follow-up: thread the parent's entry-mode through to
+          // the result screen so the queued-state copy distinguishes Quick
+          // Diagnose (no plant persistence) from the identify entry-point
+          // (plant-attached persistence). Gates copy only — payload routing
+          // already gates on `view.entryMode` via the `isIdentifyEntry`
+          // helper above.
+          entryMode={view.entryMode}
           onSave={handleResultSave}
           onSavePhotoOnly={handleResultSavePhotoOnly}
           onReportError={handleResultReportError}

@@ -812,3 +812,83 @@ describe('<AddNoteSheet /> — E11-006 budget gate', () => {
     expect(onSave.mock.calls[0]?.[0]).toMatchObject({ status: 'queued' });
   });
 });
+
+// ─── offlineQueue prop wiring (v0.1.61.0 follow-up) ───────────────────────
+
+describe('<AddNoteSheet /> — offlineQueue prop wiring', () => {
+  it('forwards offlineQueue to useConsultRequest: offline submit enqueues', async () => {
+    // netInfo says offline → pre-flight short-circuits the consult call
+    // and routes straight through safeEnqueue against the wired db.
+    const { client, consultSpy } = makeClient(
+      async () => ({ ok: true, data: RECOMMENDATION }), // never reached
+    );
+    const runAsync = jest.fn(
+      async (_sql: string, _params: unknown[]) => ({ lastInsertRowId: 1, changes: 1 }),
+    );
+    const getFirstAsync = jest.fn(
+      async <T,>(_sql: string, _params: unknown[]): Promise<T | null> => null,
+    );
+    const withExclusiveTransactionAsync = jest.fn(
+      async (fn: () => Promise<void>) => {
+        await fn();
+      },
+    );
+    const fakeDb = {
+      runAsync,
+      getFirstAsync,
+      getAllAsync: jest.fn(async () => []),
+      withExclusiveTransactionAsync,
+    };
+    const onSave = jest.fn();
+    render(
+      <AddNoteSheet
+        open
+        onSave={onSave as never}
+        onCancel={jest.fn() as never}
+        apiClient={client}
+        plantNickname="Steve"
+        netInfo={{ isConnected: () => false }}
+        offlineQueue={{ db: fakeDb as never }}
+        testID="add-note-sheet"
+      />,
+    );
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'leaves drooping');
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    // Offline pre-flight: no consult fired.
+    expect(consultSpy).not.toHaveBeenCalled();
+    // safeEnqueue exercised the transaction + insert.
+    expect(withExclusiveTransactionAsync).toHaveBeenCalledTimes(1);
+    expect(runAsync).toHaveBeenCalled();
+    const insertArgs = runAsync.mock.calls[0];
+    expect(insertArgs?.[0]).toMatch(/INSERT INTO sync_queue/);
+    expect((insertArgs?.[1] as unknown[])?.[1]).toBe('consult');
+  });
+
+  it('omitting offlineQueue keeps legacy behavior: no persistence calls', async () => {
+    const { client } = makeClient(async () => ({ ok: false, kind: 'queued' }));
+    const runAsync = jest.fn();
+    const withExclusiveTransactionAsync = jest.fn();
+    const onSave = jest.fn();
+    render(
+      <AddNoteSheet
+        open
+        onSave={onSave as never}
+        onCancel={jest.fn() as never}
+        apiClient={client}
+        plantNickname="Steve"
+        netInfo={{ isConnected: () => false }}
+        testID="add-note-sheet"
+      />,
+    );
+    fireEvent.changeText(screen.getByTestId('add-note-sheet-input'), 'leaves drooping');
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('add-note-sheet-save'));
+      await flushMicrotasks();
+    });
+    expect(runAsync).not.toHaveBeenCalled();
+    expect(withExclusiveTransactionAsync).not.toHaveBeenCalled();
+  });
+});
