@@ -64,8 +64,15 @@ async function setupDb(): Promise<{
   plantId: string;
 }> {
   const raw = new Database(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON');
+  raw.pragma('foreign_keys = ON');
   await runMigrations(makeMigrationAdapter(raw));
+  // Defensive re-set: ubuntu-latest CI deterministically dropped FK
+  // enforcement between connection-open and the first user query, despite
+  // PRAGMA being set before runMigrations. Reproducing locally on darwin
+  // never surfaced this; the linux better-sqlite3@12.9.0 prebuilt binary
+  // behaves differently. Re-setting after migrations is a no-op when the
+  // pragma is already ON and a fix when it isn't.
+  raw.pragma('foreign_keys = ON');
   const plantId = 'plant-1';
   raw
     .prepare(
@@ -357,7 +364,7 @@ describe('selectNotesForPlant', () => {
 describe('migrations + notes table', () => {
   it('migration is idempotent -- running runMigrations twice does not error', async () => {
     const raw = new Database(':memory:');
-    raw.exec('PRAGMA foreign_keys = ON');
+    raw.pragma('foreign_keys = ON');
     await runMigrations(makeMigrationAdapter(raw));
     await expect(runMigrations(makeMigrationAdapter(raw))).resolves.toBeUndefined();
 
@@ -367,7 +374,7 @@ describe('migrations + notes table', () => {
 
   it('SCHEMA_V1_SQL creates a notes table with the expected NOT NULL columns', async () => {
     const raw = new Database(':memory:');
-    raw.exec('PRAGMA foreign_keys = ON');
+    raw.pragma('foreign_keys = ON');
     await runMigrations(makeMigrationAdapter(raw));
     const cols = raw
       .prepare("PRAGMA table_info('notes')")

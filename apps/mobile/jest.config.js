@@ -17,6 +17,13 @@ module.exports = {
   preset: 'jest-expo',
   testEnvironment: 'node',
   setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
+  // Bumped from the default 5000ms because integration test files
+  // (cameraFlow.integration.test.tsx, weeklyReviewFlow.integration.test.tsx)
+  // hit per-test timeouts under ubuntu-latest CI's parallel-load conditions
+  // even when each test completes in <500ms locally. The 5s default is too
+  // tight for tests that render full screens through StrictMode + multiple
+  // useEffect tiers + queued setState batches on a slower runner.
+  testTimeout: 15000,
   testMatch: ['**/__tests__/**/*.test.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
   transformIgnorePatterns: [
     'node_modules/(?!(\\.bun/)?(\\.pnpm/)?(@?(?:jest-)?react-native(-community)?|expo(nent)?|@expo(nent)?(/.*)?|@expo-google-fonts(/.*)?|react-clone-referenced-element|react-navigation|@react-navigation(/.*)?|@unimodules(/.*)?|unimodules|sentry-expo|@sentry/react-native|native-base|react-native-svg))',

@@ -91,8 +91,12 @@ async function setupDb(): Promise<{
   plantsApi: ReturnType<typeof createPlantsApi>;
 }> {
   const raw = new Database(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON');
+  raw.pragma('foreign_keys = ON');
   await runMigrations(makeMigrationAdapter(raw));
+  // Defensive re-set: see notes.test.ts setupDb for rationale (ubuntu-latest
+  // CI dropped FK enforcement after migrations on the linux better-sqlite3
+  // prebuilt; darwin reproduced clean).
+  raw.pragma('foreign_keys = ON');
   const adapter = makePlantsAdapter(raw);
   const api = createMarkWateredApi(adapter);
   const plantsApi = createPlantsApi(adapter);
