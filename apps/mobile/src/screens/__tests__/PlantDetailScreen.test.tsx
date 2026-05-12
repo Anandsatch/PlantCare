@@ -825,6 +825,38 @@ describe('formatLastWatered', () => {
       'Last watered 3 days ago',
     );
   });
+
+  // Hermes-without-Intl: toLocaleDateString throws on configurations where
+  // Hermes ships without full Intl. The 14+-day branch is the only path that
+  // calls it; the screen-level Hermes tripwire (E4-008 test.failing inverted
+  // regression) was filed because this helper crashed on a 20-day-back fixture.
+  // The numeric-array fallback in formatMonthDay must catch the throw and
+  // return "Last watered Apr 16" (or the equivalent for the date's month).
+  it('regression: toLocaleDateString throws → falls back to "Last watered Apr 16"', () => {
+    const twentyBack = new Date(2026, 3, 16, 14, 0, 0).getTime(); // April 16
+    const original = Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleDateString = function throwing(): string {
+      throw new Error('Hermes-without-Intl');
+    };
+    try {
+      expect(formatLastWatered(twentyBack, NOW2)).toBe('Last watered Apr 16');
+    } finally {
+      Date.prototype.toLocaleDateString = original;
+    }
+  });
+
+  it('regression: toLocaleDateString returns empty string → falls back to numeric label', () => {
+    const twentyBack = new Date(2026, 3, 16, 14, 0, 0).getTime(); // April 16
+    const original = Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleDateString = function emptyReturn(): string {
+      return '';
+    };
+    try {
+      expect(formatLastWatered(twentyBack, NOW2)).toBe('Last watered Apr 16');
+    } finally {
+      Date.prototype.toLocaleDateString = original;
+    }
+  });
 });
 
 describe('resolveSpeciesHeadline', () => {
