@@ -1,6 +1,6 @@
 import { darkTheme, lightTheme } from '@plantcare/theme';
 import { act, render } from '@testing-library/react-native';
-import { Animated } from 'react-native';
+import { AccessibilityInfo, Animated } from 'react-native';
 
 import { DiagnoseLoadingState } from '../DiagnoseLoadingState';
 
@@ -145,13 +145,49 @@ describe('DiagnoseLoadingState', () => {
       loopSpy.mockRestore();
     });
 
-    it('starts an Animated.loop per dot (3 total) when reduce-motion is disabled', () => {
+    it('starts an Animated.loop per dot (3 total) when reduce-motion is disabled', async () => {
       mockedUseReduceMotion.mockReturnValue(false);
+      // E11-004: the loop now starts AFTER the synchronous OS-probe
+      // resolves (mirrors the FABPopover async-window pattern). Mock the
+      // probe to resolve false so the loop fires after one microtask.
+      jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(false);
       const loopSpy = jest.spyOn(Animated, 'loop');
 
       render(<DiagnoseLoadingState startedAtMs={T0} nowMs={T0} testID="dls" />);
 
+      // Flush the OS probe.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
       expect(loopSpy).toHaveBeenCalledTimes(3);
+      loopSpy.mockRestore();
+    });
+
+    it('does NOT start Animated.loop when OS probe says reduce-motion ON (boot-window race)', async () => {
+      // E11-004: the original code initialized dots at PULSE_MIN_OPACITY
+      // when the hook said false-by-default, and started the loop
+      // immediately. A reduce-motion user briefly saw dim dots + an
+      // Animated.loop call in the boot window. The fix: probe the OS
+      // synchronously and gate the loop on the probe result. This test
+      // pins that contract.
+      mockedUseReduceMotion.mockReturnValue(false);
+      jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(true);
+      const loopSpy = jest.spyOn(Animated, 'loop');
+
+      render(<DiagnoseLoadingState startedAtMs={T0} nowMs={T0} testID="dls" />);
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(loopSpy).not.toHaveBeenCalled();
       loopSpy.mockRestore();
     });
   });

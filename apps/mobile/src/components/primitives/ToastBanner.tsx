@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import {
+  AccessibilityInfo,
   type AccessibilityRole,
   Animated,
   Platform,
@@ -203,28 +204,53 @@ export function ToastBanner(props: ToastBannerProps) {
       pulseOpacity.setValue(PULSE_END_OPACITY);
       return;
     }
-    // Start the loop FROM the end-state; the first timing step dips down
-    // to PULSE_MIN_OPACITY, the second returns to PULSE_END_OPACITY. This
-    // ordering means the only opacity ever painted before useReduceMotion()
-    // resolves is 1.0 — which is what reduce-motion users should see anyway.
+    // Async-window guard (E11-004 sweep). `useReduceMotion()` returns false
+    // synchronously during the boot window before
+    // AccessibilityInfo.isReduceMotionEnabled() resolves. The previous design
+    // started the loop immediately and relied on "first painted opacity is
+    // 1.0" — but that still fires Animated.loop / Animated.timing inside
+    // the boot window for a reduce-motion user, which is a structural
+    // compliance bug (per the v0.1.55.0 E9-005 P3 lesson). Mirrors the
+    // FABPopover P1 fix: probe the OS synchronously; only start the loop
+    // when the OS confirms motion is allowed. The Animated.Value already
+    // sits at PULSE_END_OPACITY so the visible opacity stays at 1.0 across
+    // the probe resolution either way.
     pulseOpacity.setValue(PULSE_END_OPACITY);
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseOpacity, {
-          toValue: PULSE_MIN_OPACITY,
-          duration: PULSE_DURATION_MS,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseOpacity, {
-          toValue: PULSE_END_OPACITY,
-          duration: PULSE_DURATION_MS,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
+    let cancelled = false;
+    let loop: Animated.CompositeAnimation | null = null;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((osSaysReduce) => {
+        if (cancelled) return;
+        if (osSaysReduce) {
+          // OS confirms reduce-motion. No loop.
+          pulseOpacity.setValue(PULSE_END_OPACITY);
+          return;
+        }
+        // OS confirms motion allowed. Start the loop now. The first timing
+        // step dips down to PULSE_MIN_OPACITY, the second returns to
+        // PULSE_END_OPACITY.
+        loop = Animated.loop(
+          Animated.sequence([
+            Animated.timing(pulseOpacity, {
+              toValue: PULSE_MIN_OPACITY,
+              duration: PULSE_DURATION_MS,
+              useNativeDriver: true,
+            }),
+            Animated.timing(pulseOpacity, {
+              toValue: PULSE_END_OPACITY,
+              duration: PULSE_DURATION_MS,
+              useNativeDriver: true,
+            }),
+          ]),
+        );
+        loop.start();
+      })
+      .catch(() => {
+        // Probe failed — biased toward no-motion. Pulse stays static.
+      });
     return () => {
-      loop.stop();
+      cancelled = true;
+      if (loop) loop.stop();
     };
   }, [type, visible, reduceMotion, pulseOpacity]);
 

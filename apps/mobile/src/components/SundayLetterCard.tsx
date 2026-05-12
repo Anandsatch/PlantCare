@@ -76,7 +76,14 @@
 
 import * as React from 'react';
 import { useEffect, useMemo, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { useReduceMotion } from '../hooks/useReduceMotion';
 import { useTheme } from '../hooks/useTheme';
@@ -315,16 +322,44 @@ function SundayLetterCardInner({
       return;
     }
     if (hasPlayedRef.current) return;
+    // Async-window guard (E11-004 — mirrors FABPopover P1 + WeeklyReviewScreen
+    // E9-003 patterns). `useReduceMotion()` returns false synchronously for
+    // the brief window before AccessibilityInfo.isReduceMotionEnabled()
+    // resolves. The original code started the fade based on that boot-
+    // window `false`, so a Reduce Motion user briefly saw a partial fade.
+    // Defensive synchronous probe: opacity stays at the end state (=1, its
+    // initial value); we probe the OS, and only kick off the fade if the
+    // probe resolves false. Biased toward "no animation" when unknown.
     hasPlayedRef.current = true;
-    opacity.setValue(0);
-    const anim = Animated.timing(opacity, {
-      toValue: 1,
-      duration: FADE_IN_MS,
-      useNativeDriver: true,
-    });
-    anim.start();
+    let cancelled = false;
+    let activeAnim: Animated.CompositeAnimation | null = null;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((osSaysReduce) => {
+        if (cancelled) return;
+        if (osSaysReduce) {
+          // OS confirms reduce-motion. Snap to end state, no timing call.
+          opacity.setValue(1);
+          return;
+        }
+        // OS confirms motion allowed. Now set the start state and run
+        // the fade. setValue(0) inside the resolved branch means the
+        // partial-fade window can't open before the OS answer.
+        opacity.setValue(0);
+        activeAnim = Animated.timing(opacity, {
+          toValue: 1,
+          duration: FADE_IN_MS,
+          useNativeDriver: true,
+        });
+        activeAnim.start();
+      })
+      .catch(() => {
+        // Probe failed — snap to end state, skip animation. Biased toward
+        // no-motion is the safer fallback.
+        if (!cancelled) opacity.setValue(1);
+      });
     return () => {
-      anim.stop();
+      cancelled = true;
+      if (activeAnim) activeAnim.stop();
     };
   }, [reduceMotion, opacity]);
 
