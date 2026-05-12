@@ -190,6 +190,26 @@ function localDayDelta(thenMs: number, nowMs: number): number {
   return days;
 }
 
+// Jan-Dec fallback when toLocaleDateString throws or returns falsy on Hermes
+// builds without full Intl. Same convention as WateringLedger.SHORT_WEEKDAYS_FALLBACK.
+const SHORT_MONTHS_FALLBACK = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+function formatMonthDay(d: Date): string {
+  try {
+    const formatted = d.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
+    if (formatted && typeof formatted === 'string') return formatted;
+  } catch {
+    // fall through
+  }
+  return `${SHORT_MONTHS_FALLBACK[d.getMonth()]} ${d.getDate()}`;
+}
+
 /**
  * Format the "last watered" line shown beneath the species/nickname header.
  * Bucketing matches PhotoTimeline so the screen reads consistently:
@@ -197,7 +217,7 @@ function localDayDelta(thenMs: number, nowMs: number): number {
  *   0      → 'Last watered today'
  *   1      → 'Last watered yesterday'
  *   2-13   → 'Last watered N days ago'
- *   14+    → 'Last watered <Mon D>' (toLocaleDateString)
+ *   14+    → 'Last watered <Mon D>' (toLocaleDateString with Hermes-safe fallback)
  */
 export function formatLastWatered(
   lastWateredAtMs: number | null,
@@ -208,11 +228,7 @@ export function formatLastWatered(
   if (delta === 0) return 'Last watered today';
   if (delta === 1) return 'Last watered yesterday';
   if (delta <= 13) return `Last watered ${delta} days ago`;
-  const formatted = new Date(lastWateredAtMs).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-  });
-  return `Last watered ${formatted}`;
+  return `Last watered ${formatMonthDay(new Date(lastWateredAtMs))}`;
 }
 
 /**
