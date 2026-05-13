@@ -3,6 +3,52 @@
 All notable changes to PlantCare will be documented in this file.
 
 
+## [0.1.73.0] - 2026-05-13
+
+Fix — CI flake root cause finally identified and surgically fixed. The two flaky FK-violation tests (`notes.test.ts` "enforces plant_id existence with PRAGMA foreign_keys = ON" + `useMarkWatered.test.tsx` "throws on FK violation when plant_id does not exist") that have been blocking normal-merge since v0.1.51.0 — and that the v0.1.69.0 defensive PRAGMA re-set only partially masked — are NOT a PRAGMA-state issue and NOT a linux-binary issue. The actual root cause is a Jest-vs-better-sqlite3 dual-realm `Error` interaction: under parallel-worker test isolation, `better-sqlite3`'s `SqliteError` captures `Error` at module-load time, and the captured `Error.prototype` non-deterministically resolves to a different realm than the test file's `Error`. Jest's `.toThrow()` matcher internally gates on `instanceof Error` and reports "did not throw" when that check returns false — even though a SqliteError WAS thrown with `message: "FOREIGN KEY constraint failed"`. The fix replaces `.rejects.toThrow(/FOREIGN KEY/i)` with an explicit `try/catch` + `.toMatch()` on the error message — a realm-safe assertion path that doesn't depend on cross-realm constructor identity. Locally reproduced on darwin-arm64 in 3-of-5 full-suite parallel runs before the fix; verified 10-of-10 clean after the fix. Production is unaffected (Hermes is a single realm; this is exclusively a Jest worker-sandbox quirk).
+
+### Investigation summary
+
+The v0.1.69.0 mitigation added a defensive `raw.pragma('foreign_keys = ON')` AFTER `runMigrations` and bumped Jest's `testTimeout` to 15s, hypothesizing that the linux `better-sqlite3@12.9.0` prebuilt was silently dropping FK enforcement. The two FK tests still failed on CI after that landed. Today's investigation added structured `FK_DIAG` logging that captured `pragma('foreign_keys')` immediately before AND after the (failing) call site, the actual `caught` value's constructor name, its `__proto__` chain, and `caught instanceof Error`. Across 5 runs the diagnostic showed:
+
+- `pragmaBefore: 1, pragmaAfter: 1` — PRAGMA was ALWAYS on (the `cascade-deletes` test in the same describe block passing was a separate confirmation — cascade only fires when FK is enforced).
+- `threw: true, errMsg: "FOREIGN KEY constraint failed"` — the SqliteError WAS thrown, every time.
+- `noteCount: 0` / `wateringCount: 0` — the row never persisted.
+- `events: ["optimistic","rollback"]` — the production rollback path fired.
+- `ctorName: "SqliteError", protoChain: ["SqliteError","Error","Object"]` — the SqliteError's prototype chain LOOKS correct.
+- **`isInstanceOfError: false`** in 3-of-5 runs for at least one test — the smoking gun. The dual-realm `Error` mismatch.
+
+Jest's `.toThrow()` (and `.rejects.toThrow()`) implementation reports "did not throw" when the caught value fails its internal `instanceof Error` predicate — exactly the behavior the CI log shows. The defensive PRAGMA from v0.1.69.0 was treating a hypothesis that the diagnostic eliminated.
+
+### Changed
+- `apps/mobile/src/db/__tests__/notes.test.ts` — `addNote -- foreign key constraint › enforces plant_id existence with PRAGMA foreign_keys = ON` rewritten to use an explicit `try { await api.addNote(...) } catch (e) { caught = e }` pattern followed by `expect(caught?.message).toMatch(/FOREIGN KEY/i)`. The realm-safe path: `.message` is a string property accessed on the caught value, no `instanceof Error` gate. Adds a defense-in-depth `noteCount === 0` post-check to confirm the row didn't sneak through. The defensive `raw.pragma('foreign_keys = ON')` after `runMigrations` is preserved as a harmless no-op with the comment rewritten to point at the real root cause (FK-violation test pattern), so a future maintainer doesn't re-investigate the wrong hypothesis.
+- `apps/mobile/src/hooks/__tests__/useMarkWatered.test.tsx` — `createMarkWateredApi › throws on FK violation when plant_id does not exist (and emits rollback)` rewritten with the same try/catch + message-match pattern. The `events: ['optimistic', 'rollback']` assertion is unchanged — that path was already realm-safe (events array is constructed in-test). Setup comment updated to cross-reference the real root cause.
+- `apps/mobile/src/db/__tests__/migrations.test.ts` — same realm-safe pattern applied to two latent same-class assertions surfaced by codex P2 review: (1) `rejects a watering_event with a non-existent plant_id when foreign_keys is ON` (line 205, also a FOREIGN KEY SqliteError) and (2) `rejects is_indoor values outside {0, 1} via CHECK constraint` (line 283, a CHECK-constraint SqliteError). Neither test has surfaced as flake in CI yet — they happen to run earlier in the worker before the realm-drift conditions trigger — but they hit the same native-SqliteError path through Jest's `.toThrow()`. Migrated proactively rather than wait for the next regression.
+
+### Local verification (scoped claim)
+- Pre-fix: full mobile suite (`bunx jest`) failed on the FK test in 3 of 5 darwin-arm64 runs (concurrent `cameraFlow` / `weeklyReviewFlow` integration tests load the runtime to reproduce the parallel-worker module-evaluation ordering).
+- Post-fix: 10 consecutive `bunx jest` runs, **10/10 pass, 1496/1496 tests green, suite time ~4.8s steady-state** on darwin-arm64. CI on `ubuntu-latest` should validate the fix on the same hardware where the original deterministic reproduction lived; until that CI run lands green, the claim is "local reproduction stopped" not "the flake is universally gone."
+
+### Adversarial review (codex CLI)
+Run via `timeout 240 codex exec --skip-git-repo-check --sandbox read-only` against the staged diff with three targeted prompts: (1) "Could the new try/catch swallow a non-SqliteError throw and pass the test incorrectly?", (2) "Is the `caught?.message` check loose enough that any production-code Error with a 'FOREIGN KEY'-ish substring would pass?", (3) "Does removing the defensive PRAGMA re-set re-introduce any other flake?"
+1. **No findings.** `caught?.message` returns `undefined` if no throw happened (then the assertion fails), or a string from any thrown value. A non-FK error (e.g., a hypothetical `addNote` validation error) would either have a different message (assertion fails) or also legitimately surface as a "FK violation"-shaped path (a real bug, caught). Catch is `e: unknown`, no information loss.
+2. **No findings.** The match is `/FOREIGN KEY/i` — anchored to the literal SQLite error-message prefix. The only path that produces this string in production is SQLite's FK constraint check. JS-layer `Error('FOREIGN KEY required')` doesn't exist in this codebase (verified via `grep -rn "FOREIGN KEY"` across `apps/mobile/src/` — only test files reference the phrase).
+3. **No findings.** The defensive PRAGMA re-set is preserved unchanged; only the misleading comment is updated. PRAGMA + testTimeout v0.1.69.0 changes remain intact.
+
+### V1 scope locks (rejected)
+- **No removal of the v0.1.69.0 defensive PRAGMA re-set.** It's a harmless no-op now that we know it wasn't the issue, and a future SQLite/better-sqlite3 upgrade could in theory regress. Touching it is scope creep beyond the test-assertion fix.
+- **No revert of `testTimeout: 15000`.** That bump still helps integration tests under parallel load (separate from the FK flake) and is not in the blast radius of this fix.
+- **No upgrade of `better-sqlite3` past 12.9.0.** This is a Jest-module-realm issue, not a better-sqlite3 bug. Upgrading wouldn't fix it; pinning to 12.9.0 stays.
+- **No `jest --runInBand` or `--maxWorkers=1`.** Would serialize the entire mobile suite for a hypothesis we've now definitively ruled out, slowing CI from ~5s to ~30s. The fix targets the specific assertion pattern, not the parallelism model.
+- **No Jest config change** (no `resetModules: false`, no `globals.Error` shim). The shipped pattern (try/catch + message match) is the correct test idiom for native-binding errors anyway; Jest-config workarounds would be a smell.
+- **No upgrade of jest-expo or @testing-library/react-native.** The dual-realm `Error` interaction is a structural Jest property under parallel workers, not an upstream bug to fix.
+
+### Notes
+- **Zero production source changed.** The user-visible app is byte-identical to v0.1.72.0. The two test files + CHANGELOG + VERSION + this entry are the entire diff.
+- **The v0.1.69.0 hypothesis was wrong — but its mitigation didn't hurt.** The defensive PRAGMA is a no-op; the testTimeout bump is independently useful. We kept both. The lesson for future flake investigations: get the diagnostic in BEFORE shipping a defensive fix — `FK_DIAG`-style structured logging is cheap and would have closed the case on day one.
+- **Should unblock normal-merge for future PRs** once the CI run on this PR confirms the fix on `ubuntu-latest`. Wave 4's admin-bypass workflow can then retire and CI returns to a reliable green/red signal for V1 software-only work.
+- **V1 software is functionally complete pending this fix's CI validation.** Only Anand-owned manual gates remain after that (workers.dev deploy, OpenRouter spend cap, dark-mode physical-device pass, E12 Maestro on devices, E13 distribution).
+
 ## [0.1.72.0] - 2026-05-12
 
 Fix — Wave 4 deferred follow-ups, bundled. Three small, architecturally-independent follow-ups that were documented as "to be addressed" in prior CHANGELOG entries (v0.1.58.0 for #1 and #2; v0.1.61.0 for #3) and have been sitting in the brief's tail since Wave 4. Bundled into one PR because each diff is small (<50 LOC of production code), they share no risk surface, and three sequential PRs against the same week's main branch would be more friction than value. The semver slot is 0.1.72.0 (leaves room for 0.1.70.0 and 0.1.71.0 to land separately if they're queued).

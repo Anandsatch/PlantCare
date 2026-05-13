@@ -93,9 +93,9 @@ async function setupDb(): Promise<{
   const raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
   await runMigrations(makeMigrationAdapter(raw));
-  // Defensive re-set: see notes.test.ts setupDb for rationale (ubuntu-latest
-  // CI dropped FK enforcement after migrations on the linux better-sqlite3
-  // prebuilt; darwin reproduced clean).
+  // Belt-and-braces no-op (see notes.test.ts setupDb for the real story —
+  // v0.1.73.0 CHANGELOG. The actual flake was Jest's dual-realm Error
+  // breaking `.rejects.toThrow()` on the SqliteError, not PRAGMA state.).
   raw.pragma('foreign_keys = ON');
   const adapter = makePlantsAdapter(raw);
   const api = createMarkWateredApi(adapter);
@@ -158,7 +158,18 @@ describe('createMarkWateredApi', () => {
     const { api } = await setupDb();
     const events: WateringBusEvent[] = [];
     wateringEventsBus.subscribe((e) => events.push(e));
-    await expect(api.insert('does-not-exist', 'user')).rejects.toThrow();
+    // SqliteError from the native better-sqlite3 binding fails Jest's
+    // cross-realm `instanceof Error` check under parallel-worker load, which
+    // causes `.rejects.toThrow()` to flake with "did not throw". Catch + assert
+    // on `.message` directly. (See notes.test.ts FK test + v0.1.73.0 CHANGELOG.)
+    let caught: { message?: string } | undefined;
+    try {
+      await api.insert('does-not-exist', 'user');
+    } catch (e) {
+      caught = e as { message?: string };
+    }
+    expect(caught).toBeDefined();
+    expect(caught?.message).toMatch(/FOREIGN KEY/i);
     expect(events.map((e) => e.kind)).toEqual(['optimistic', 'rollback']);
   });
 

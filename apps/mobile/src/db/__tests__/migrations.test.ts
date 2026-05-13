@@ -206,13 +206,22 @@ describe('FK constraints', () => {
     const { adapter, raw } = freshDb();
     await runMigrations(adapter);
 
-    expect(() => {
+    // SqliteError from the native better-sqlite3 binding fails Jest's
+    // cross-realm `instanceof Error` check under parallel-worker load (see
+    // v0.1.73.0 CHANGELOG). Catch + assert on `.message` directly to stay
+    // realm-safe.
+    let caught: { message?: string } | undefined;
+    try {
       raw
         .prepare(
           "INSERT INTO watering_events (id, plant_id, watered_at, source) VALUES ('w1', 'does-not-exist', 1, 'user')",
         )
         .run();
-    }).toThrow(/FOREIGN KEY/i);
+    } catch (e) {
+      caught = e as { message?: string };
+    }
+    expect(caught).toBeDefined();
+    expect(caught?.message).toMatch(/FOREIGN KEY/i);
   });
 
   it('cascades deletes from photos to diagnoses (uses idx_diagnoses_photo)', async () => {
@@ -284,13 +293,21 @@ describe('plants.is_indoor + override_interval_days (WORKBACK additions)', () =>
     const { adapter, raw } = freshDb();
     await runMigrations(adapter);
 
-    expect(() => {
+    // Realm-safe assertion pattern (see v0.1.73.0 CHANGELOG): native
+    // SqliteError fails Jest's `instanceof Error` check under parallel
+    // load, so catch + assert on `.message` instead of `.toThrow()`.
+    let caught: { message?: string } | undefined;
+    try {
       raw
         .prepare(
           "INSERT INTO plants (id, species_slug, added_at, is_indoor) VALUES ('p1', 'm', 1, 2)",
         )
         .run();
-    }).toThrow(/CHECK/i);
+    } catch (e) {
+      caught = e as { message?: string };
+    }
+    expect(caught).toBeDefined();
+    expect(caught?.message).toMatch(/CHECK/i);
   });
 });
 

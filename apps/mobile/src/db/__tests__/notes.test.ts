@@ -66,12 +66,13 @@ async function setupDb(): Promise<{
   const raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
   await runMigrations(makeMigrationAdapter(raw));
-  // Defensive re-set: ubuntu-latest CI deterministically dropped FK
-  // enforcement between connection-open and the first user query, despite
-  // PRAGMA being set before runMigrations. Reproducing locally on darwin
-  // never surfaced this; the linux better-sqlite3@12.9.0 prebuilt binary
-  // behaves differently. Re-setting after migrations is a no-op when the
-  // pragma is already ON and a fix when it isn't.
+  // PRAGMA state is stable through runMigrations — this re-set is a
+  // belt-and-braces no-op kept for clarity. The actual CI flake that
+  // motivated v0.1.69.0's mitigation was not a PRAGMA reset; it was a
+  // Jest-vs-better-sqlite3 dual-realm `instanceof Error` mismatch in the
+  // FK-violation tests' `.rejects.toThrow()` assertions (see v0.1.73.0
+  // CHANGELOG + the explicit try/catch + message-match pattern in the FK
+  // violation test below).
   raw.pragma('foreign_keys = ON');
   const plantId = 'plant-1';
   raw
@@ -256,15 +257,34 @@ describe('addNote -- input validation', () => {
 
 describe('addNote -- foreign key constraint', () => {
   it('enforces plant_id existence with PRAGMA foreign_keys = ON', async () => {
-    const { api } = await setupDb();
-    await expect(
-      api.addNote({
+    const { raw, api } = await setupDb();
+    // The native better-sqlite3 binding throws a SqliteError. Asserting via
+    // `.rejects.toThrow(/FOREIGN KEY/i)` flakes under parallel-worker load
+    // because Jest's `.toThrow()` matcher gates on `instanceof Error`, and
+    // SqliteError captures `Error` at module-load time. Under parallel-test
+    // module-evaluation ordering the SqliteError's `Error.prototype` can
+    // resolve to a different realm's Error than the test file sees, so
+    // `instanceof Error` non-deterministically returns false. Catch + assert
+    // on `.message` directly — that path doesn't rely on cross-realm
+    // identity. (See v0.1.73.0 CHANGELOG.)
+    let caught: { message?: string } | undefined;
+    try {
+      await api.addNote({
         plant_id: 'does-not-exist',
         user_text: 'orphan note',
         llm_response: null,
         consult_status: 'ok',
-      }),
-    ).rejects.toThrow(/FOREIGN KEY/i);
+      });
+    } catch (e) {
+      caught = e as { message?: string };
+    }
+    expect(caught).toBeDefined();
+    expect(caught?.message).toMatch(/FOREIGN KEY/i);
+    // Defense-in-depth: the row must NOT have landed. PRAGMA must have been
+    // ON for the throw to fire (cascade-deletes test in this same describe
+    // block separately confirms PRAGMA state).
+    const noteCount = (raw.prepare('SELECT COUNT(*) AS c FROM notes').get() as { c: number }).c;
+    expect(noteCount).toBe(0);
   });
 
   it('cascade-deletes notes when the parent plant is removed', async () => {
